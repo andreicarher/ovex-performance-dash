@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OVEX · Dashboard de Paid Media</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  :root{
+    --bg:#0f1419; --surface:#1a2332; --surface-2:#212c40; --primary:#1a2332; --secondary:#2c3e50;
+    --accent:#e74c3c; --success:#27ae60; --warning:#f39c12; --info:#3498db; --purple:#9b59b6;
+    --text:#ecf0f1; --text-muted:#95a5a6; --border:rgba(255,255,255,.08);
+    --shadow: 0 8px 32px rgba(0,0,0,.3);
+  }
+  body{ font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); line-height:1.5; }
+  a{ color:inherit; }
+
+  /* ---------- Header ---------- */
+  .topbar{ background:linear-gradient(135deg,#1a2332 0%,#2c3e50 100%); padding:1.5rem 2rem; border-bottom:3px solid var(--accent); }
+  .topbar-inner{ max-width:1500px; margin:0 auto; display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:1rem; }
+  .topbar h1{ font-size:1.9rem; font-weight:800; background:linear-gradient(135deg,#fff 0%,#e74c3c 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+  .topbar .subtitle{ color:var(--text-muted); font-size:.95rem; margin-top:.15rem; }
+  .status-badges{ display:flex; gap:.6rem; flex-wrap:wrap; }
+  .status-badge{ font-size:.78rem; font-weight:600; padding:.4rem .8rem; border-radius:20px; display:flex; align-items:center; gap:.4rem; white-space:nowrap; }
+  .status-badge.live{ background:rgba(39,174,96,.15); color:var(--success); border:1px solid rgba(39,174,96,.35); }
+  .status-badge.warn{ background:rgba(243,156,18,.15); color:var(--warning); border:1px solid rgba(243,156,18,.35); }
+  .status-badge.error{ background:rgba(231,76,60,.15); color:var(--accent); border:1px solid rgba(231,76,60,.35); }
+
+  /* ---------- Global filter bar ---------- */
+  .filterbar{ background:var(--surface); border-bottom:1px solid var(--border); padding:1rem 2rem; position:sticky; top:0; z-index:20; }
+  .filterbar-inner{ max-width:1500px; margin:0 auto; display:flex; gap:1.25rem; align-items:center; flex-wrap:wrap; }
+  .fb-group{ display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
+  .fb-label{ font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); font-weight:700; margin-right:.15rem; }
+  .preset-btn{ background:var(--secondary); color:var(--text); border:1px solid transparent; padding:.5rem 1rem; border-radius:7px; cursor:pointer; font-size:.85rem; font-weight:600; transition:.15s; }
+  .preset-btn:hover{ border-color:var(--accent); }
+  .preset-btn.active{ background:var(--accent); box-shadow:0 3px 10px rgba(231,76,60,.35); }
+  .custom-range{ display:none; gap:.4rem; align-items:center; }
+  .custom-range.show{ display:flex; }
+  .custom-range input[type=date]{ background:var(--secondary); border:1px solid var(--border); color:var(--text); padding:.4rem .6rem; border-radius:6px; font-size:.82rem; }
+  .toggle-pill{ display:flex; background:var(--secondary); border-radius:8px; overflow:hidden; }
+  .toggle-pill button{ background:transparent; border:none; color:var(--text-muted); padding:.5rem 1rem; font-size:.85rem; font-weight:600; cursor:pointer; }
+  .toggle-pill button.active{ background:var(--accent); color:#fff; }
+  .compare-check{ display:flex; align-items:center; gap:.4rem; font-size:.85rem; color:var(--text-muted); cursor:pointer; user-select:none; }
+  .compare-check input{ accent-color:var(--accent); width:16px; height:16px; cursor:pointer; }
+
+  /* ---------- Tabs ---------- */
+  .tabs-nav{ background:var(--surface); padding:0 2rem; display:flex; gap:.25rem; border-bottom:2px solid var(--border); overflow-x:auto; }
+  .tab-btn{ background:transparent; color:var(--text-muted); border:none; padding:1rem 1.5rem; cursor:pointer; font-size:.92rem; font-weight:700; border-bottom:3px solid transparent; white-space:nowrap; transition:.15s; }
+  .tab-btn:hover:not(:disabled){ color:var(--text); background:rgba(255,255,255,.04); }
+  .tab-btn.active{ color:var(--accent); border-bottom-color:var(--accent); }
+  .tab-btn:disabled{ opacity:.4; cursor:default; }
+  .tab-content{ display:none; }
+  .tab-content.active{ display:block; }
+  .container{ max-width:1500px; margin:0 auto; padding:2rem; }
+
+  .placeholder{ text-align:center; padding:5rem 2rem; color:var(--text-muted); }
+  .placeholder .emoji{ font-size:3rem; margin-bottom:1rem; }
+
+  /* ---------- Alert banner ---------- */
+  .alert-banner{ display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; margin-bottom:2rem; }
+  .alert-card{ background:var(--surface); border-left:4px solid var(--card-color,var(--warning)); border-radius:10px; padding:1.1rem 1.3rem; box-shadow:var(--shadow); }
+  .alert-card .a-title{ font-weight:700; font-size:.88rem; margin-bottom:.3rem; color:var(--card-color,var(--warning)); }
+  .alert-card .a-text{ font-size:.85rem; color:var(--text-muted); line-height:1.5; }
+
+  /* ---------- KPI grid ---------- */
+  .kpi-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:1.25rem; margin-bottom:1.25rem; }
+  .kpi-card{ background:var(--surface); padding:1.3rem 1.4rem; border-radius:12px; box-shadow:var(--shadow); position:relative; overflow:hidden; border:1px solid var(--border); }
+  .kpi-card::before{ content:''; position:absolute; top:0; left:0; width:4px; height:100%; background:var(--card-color,var(--info)); }
+  .kpi-label{ font-size:.76rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; font-weight:700; margin-bottom:.4rem; }
+  .kpi-value{ font-size:1.9rem; font-weight:800; line-height:1; }
+  .kpi-delta{ font-size:.78rem; margin-top:.45rem; font-weight:700; }
+  .kpi-delta.up{ color:var(--success); }
+  .kpi-delta.down{ color:var(--accent); }
+  .kpi-grid.small .kpi-value{ font-size:1.3rem; }
+  .kpi-grid.small .kpi-sub{ font-size:.72rem; color:var(--text-muted); margin-top:.2rem; }
+
+  /* ---------- Chart card ---------- */
+  .chart-card{ background:var(--surface); padding:1.75rem; border-radius:12px; box-shadow:var(--shadow); border:1px solid var(--border); margin-bottom:2rem; }
+  .chart-card-head{ display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem; margin-bottom:1.25rem; }
+  .chart-title{ font-size:1.15rem; font-weight:700; }
+  .series-toggles{ display:flex; gap:1rem; flex-wrap:wrap; }
+  .series-toggle{ display:flex; align-items:center; gap:.4rem; font-size:.82rem; color:var(--text-muted); cursor:pointer; user-select:none; }
+  .series-toggle input{ width:15px; height:15px; cursor:pointer; }
+  .chart-container{ position:relative; height:380px; }
+
+  /* ---------- Table ---------- */
+  .table-card{ background:var(--surface); padding:1.75rem; border-radius:12px; box-shadow:var(--shadow); border:1px solid var(--border); overflow-x:auto; }
+  table{ width:100%; border-collapse:collapse; min-width:640px; }
+  th{ background:var(--primary); padding:.85rem 1rem; text-align:left; font-weight:700; text-transform:uppercase; font-size:.74rem; letter-spacing:.04em; border-bottom:2px solid var(--accent); color:var(--text-muted); }
+  td{ padding:.85rem 1rem; border-bottom:1px solid var(--border); font-size:.9rem; }
+  tr.total-row td{ font-weight:800; background:rgba(255,255,255,.02); }
+  tr:hover td{ background:rgba(255,255,255,.02); }
+
+  .loading{ text-align:center; padding:4rem; color:var(--text-muted); }
+  .spinner{ width:36px; height:36px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; margin:0 auto 1rem; animation:spin 1s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
+  .error-box{ background:rgba(231,76,60,.1); border:1px solid rgba(231,76,60,.35); border-radius:10px; padding:1.25rem 1.5rem; margin-bottom:1.5rem; font-size:.88rem; }
+  .error-box b{ color:var(--accent); }
+  .error-box code{ background:rgba(0,0,0,.3); padding:.1rem .4rem; border-radius:4px; }
+
+  @media (max-width:720px){
+    .topbar, .filterbar, .container{ padding-left:1rem; padding-right:1rem; }
+    .kpi-value{ font-size:1.5rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div>
+      <h1>OVEX · Paid Media Dashboard</h1>
+      <div class="subtitle">Growth &amp; Performance · Rockin Media</div>
+    </div>
+    <div class="status-badges" id="statusBadges">
+      <span class="status-badge warn">⏳ Cargando datos...</span>
+    </div>
+  </div>
+</div>
+
+<div class="filterbar">
+  <div class="filterbar-inner">
+    <div class="fb-group">
+      <span class="fb-label">Periodo</span>
+      <button class="preset-btn" data-preset="7">Últimos 7 días</button>
+      <button class="preset-btn" data-preset="14">Últimos 14 días</button>
+      <button class="preset-btn" data-preset="thisMonth">Este mes</button>
+      <button class="preset-btn" data-preset="lastMonth">Mes anterior</button>
+      <button class="preset-btn active" data-preset="all">Todo 2026</button>
+      <button class="preset-btn" data-preset="custom">Personalizado</button>
+      <span class="custom-range" id="customRange">
+        <input type="date" id="customStart"> <span style="color:var(--text-muted)">→</span> <input type="date" id="customEnd">
+      </span>
+    </div>
+    <div class="fb-group">
+      <label class="compare-check"><input type="checkbox" id="compareToggle"> Comparar con período anterior</label>
+    </div>
+    <div class="fb-group">
+      <span class="fb-label">Vista</span>
+      <div class="toggle-pill" id="granularityToggle">
+        <button class="active" data-g="month">Mensual</button>
+        <button data-g="week">Semanal</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tabs-nav">
+  <button class="tab-btn active" data-tab="resumen">📊 Resumen Ejecutivo</button>
+  <button class="tab-btn" disabled title="Próximamente">🎯 Performance &amp; Creativos</button>
+  <button class="tab-btn" disabled title="Próximamente">🔄 Funnel &amp; Pipeline</button>
+  <button class="tab-btn" disabled title="Próximamente">🛠 Salud de Data &amp; Auditoría</button>
+</div>
+
+<!-- TAB 1: RESUMEN EJECUTIVO -->
+<div id="tab-resumen" class="tab-content active">
+  <div class="container">
+
+    <div id="loadingBox" class="loading">
+      <div class="spinner"></div>
+      Conectando con Google Sheets (Base Leads, Meta Ads, Google Ads)...
+    </div>
+
+    <div id="errorBox" style="display:none;"></div>
+
+    <div id="dashboardBody" style="display:none;">
+
+      <div class="alert-banner" id="alertBanner"></div>
+
+      <div class="kpi-grid" id="kpiGridMain"></div>
+      <div class="kpi-grid small" id="kpiGridSmall"></div>
+
+      <div class="chart-card">
+        <div class="chart-card-head">
+          <div class="chart-title">Inversión vs. Onboarded / Buró / Paramétrico</div>
+          <div class="series-toggles">
+            <label class="series-toggle"><input type="checkbox" id="serieOnboarded" checked> Onboarded</label>
+            <label class="series-toggle"><input type="checkbox" id="serieBuro"> Buró aprobado</label>
+            <label class="series-toggle"><input type="checkbox" id="serieParametrico"> Paramétrico aprobado</label>
+          </div>
+        </div>
+        <div class="chart-container"><canvas id="chartMain"></canvas></div>
+      </div>
+
+      <div class="table-card">
+        <div class="chart-title" style="margin-bottom:1.25rem;">Tabla Consolidada por Canal</div>
+        <table>
+          <thead>
+            <tr><th>Canal</th><th>Inversión</th><th>Registros CRM</th><th>CPL</th><th>Onboarded</th><th>% Conv. a Onboarded</th><th>Costo / Onboarded</th></tr>
+          </thead>
+          <tbody id="channelTableBody"></tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- TABS 2-4: placeholders, se construyen en la siguiente iteración -->
+<div id="tab-performance" class="tab-content">
+  <div class="container"><div class="placeholder"><div class="emoji">🎯</div>Performance &amp; Creativos — se construye en la siguiente iteración.</div></div>
+</div>
+<div id="tab-funnel" class="tab-content">
+  <div class="container"><div class="placeholder"><div class="emoji">🔄</div>Funnel &amp; Pipeline Comercial — se construye en la siguiente iteración.</div></div>
+</div>
+<div id="tab-auditoria" class="tab-content">
+  <div class="container"><div class="placeholder"><div class="emoji">🛠</div>Salud de Data &amp; Auditoría — se construye en la siguiente iteración.</div></div>
+</div>
+
+<script>
+/* =========================================================================
+   CONFIG
+   ========================================================================= */
+const SHEET_ID = '11brCIzZA4enbO0qi7gfPvGikiNcwsqDaxMhAbMGxnQc';
+const TABS = {
+  metaDaily:  'Query Meta 2026',
+  googleDaily:'Query Google 2026',
+  leadsUTM:   'Base Leads con UTM',
+  leadsNoUTM: 'Base Leads sin UTM'
+};
+const EXCLUDED_EMAIL = 'maronmiguel@me.com';
+const MES_ES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+const MES_ES_LARGO = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+const fmtMXN = v => (isFinite(v) ? v : 0).toLocaleString('es-MX',{style:'currency',currency:'MXN',maximumFractionDigits:0});
+const fmtInt = v => Math.round(isFinite(v)?v:0).toLocaleString('es-MX');
+const fmtPct = v => (isFinite(v)?v:0).toFixed(1)+'%';
+
+/* =========================================================================
+   GVIZ FETCH + PARSE
+   ========================================================================= */
+async function fetchSheetTab(sheetName){
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&headers=1&sheet=${encodeURIComponent(sheetName)}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(`HTTP ${res.status} al leer la pestaña "${sheetName}"`);
+  const text = await res.text();
+  const match = text.match(/setResponse\(([\s\S]*)\);?\s*$/);
+  if(!match) throw new Error(`No se pudo leer la pestaña "${sheetName}" (¿existe con ese nombre exacto en el Sheet?)`);
+  const json = JSON.parse(match[1]);
+  if(json.status === 'error'){
+    const msg = (json.errors && json.errors[0] && json.errors[0].detailed_message) || 'error desconocido';
+    throw new Error(`Google Sheets rechazó la pestaña "${sheetName}": ${msg}`);
+  }
+  const cols = json.table.cols.map(c => (c.label || '').trim());
+  const rows = (json.table.rows || []).map(r => {
+    const obj = {};
+    cols.forEach((label, i) => {
+      const cell = r.c[i];
+      obj[label] = cell ? (cell.v !== undefined && cell.v !== null ? cell.v : cell.f) : null;
+      if(cell && cell.f !== undefined) obj['__f_'+label] = cell.f;
+    });
+    return obj;
+  });
+  return rows;
+}
+
+/* =========================================================================
+   DATE HELPERS
+   ========================================================================= */
+// Robust date parser: handles gviz-encoded "Date(Y,M,D)" cells, "DD/MM/YYYY" text,
+// and "DD-mon" Spanish abbreviations (ad tables, year assumed 2026 since the tab is scoped to that year).
+function parseAnyDate(raw){
+  if(raw === null || raw === undefined) return null;
+  const str = String(raw).trim();
+  if(!str) return null;
+  let m = str.match(/^Date\((\d+),(\d+),(\d+)/);
+  if(m) return new Date(Number(m[1]), Number(m[2]), Number(m[3]));
+  if(str.includes('/')){
+    const p = str.split('/');
+    if(p.length === 3){
+      const d=+p[0], mo=+p[1], y=+p[2];
+      if(d && mo && y) return new Date(y, mo-1, d);
+    }
+  }
+  if(str.includes('-')){
+    const p = str.split('-');
+    if(p.length === 2){
+      const d = parseInt(p[0],10);
+      const mi = MES_ES.indexOf(p[1].toLowerCase().slice(0,3));
+      if(d && mi >= 0) return new Date(2026, mi, d);
+    }
+  }
+  return null;
+}
+// Tries the raw (typed) value first, then the sheet's formatted display string as fallback.
+function parseFechaRegistro(row){
+  return parseAnyDate(row['Fecha registro']) || parseAnyDate(row['__f_Fecha registro']);
+}
+function parseAdDate(row){
+  const direct = parseAnyDate(row['Date']) || parseAnyDate(row['__f_Date']);
+  if(direct) return direct;
+  const month = row['Month'];
+  if(month) return new Date(2026, parseInt(month,10)-1, 1);
+  return null;
+}
+function toISO(d){ return d.toISOString().slice(0,10); }
+function fmtDDMmm(d){ return `${d.getDate()}-${MES_ES_LARGO[d.getMonth()].slice(0,3)}`; }
+
+function monthKey(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+function isoWeekKey(d){
+  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = dt.getUTCDay() || 7;
+  dt.setUTCDate(dt.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(),0,1));
+  const weekNo = Math.ceil((((dt-yearStart)/86400000)+1)/7);
+  return `${dt.getUTCFullYear()}-W${String(weekNo).padStart(2,'0')}`;
+}
+
+/* =========================================================================
+   GLOBAL STATE
+   ========================================================================= */
+let RAW = { metaDaily:[], googleDaily:[], leadsUTM:[], leadsNoUTM:[] };
+let ALL_LEADS = []; // combined + parsed + excluded record removed
+let ALL_META = [];
+let ALL_GOOGLE = [];
+let chartMain = null;
+
+let filters = { preset:'all', customStart:null, customEnd:null, compare:false, granularity:'month' };
+
+/* =========================================================================
+   INIT
+   ========================================================================= */
+async function init(){
+  try{
+    const [metaDaily, googleDaily, leadsUTM, leadsNoUTM] = await Promise.all([
+      fetchSheetTab(TABS.metaDaily),
+      fetchSheetTab(TABS.googleDaily),
+      fetchSheetTab(TABS.leadsUTM),
+      fetchSheetTab(TABS.leadsNoUTM)
+    ]);
+    RAW = { metaDaily, googleDaily, leadsUTM, leadsNoUTM };
+    processRawData();
+    document.getElementById('loadingBox').style.display = 'none';
+    document.getElementById('dashboardBody').style.display = 'block';
+    renderStatusBadges();
+    applyFiltersAndRender();
+  }catch(err){
+    document.getElementById('loadingBox').style.display = 'none';
+    showFatalError(err);
+  }
+}
+
+function showFatalError(err){
+  const box = document.getElementById('errorBox');
+  box.style.display = 'block';
+  box.innerHTML = `<div class="error-box">
+    <b>No se pudo cargar el dashboard.</b><br><br>
+    ${err.message}<br><br>
+    Verifica que el Sheet <code>Dash | KPI's OVEX</code> tenga pestañas con estos nombres exactos:
+    <code>${TABS.metaDaily}</code>, <code>${TABS.googleDaily}</code>, <code>${TABS.leadsUTM}</code>, <code>${TABS.leadsNoUTM}</code>,
+    y que el archivo esté compartido como "cualquiera con el enlace puede ver".
+  </div>`;
+  document.getElementById('statusBadges').innerHTML =
+    `<span class="status-badge error">🔴 Error de conexión</span>`;
+}
+
+function processRawData(){
+  const parseLead = (row) => {
+    const fecha = parseFechaRegistro(row);
+    if(!fecha) return null;
+    if((row['Email']||'').toString().trim().toLowerCase() === EXCLUDED_EMAIL) return null;
+    return {
+      fecha,
+      fuente: (row['Fuente']||'').toString().trim().toLowerCase(),
+      estatus: (row['Estatus cliente']||'').toString().trim(),
+      nip: (row['NIP verificado']||'').toString().trim().toUpperCase(),
+      parametrico: (row['Paramétrico aprobado']||'').toString().trim().toUpperCase(),
+      buro: (row['Buró aprobado']||'').toString().trim().toUpperCase(),
+      arrendamiento: (row['Con arrendamiento']||'').toString().trim().toUpperCase()
+    };
+  };
+  ALL_LEADS = [...RAW.leadsUTM, ...RAW.leadsNoUTM].map(parseLead).filter(Boolean);
+
+  ALL_META = RAW.metaDaily.map(row => {
+    const fecha = parseAdDate(row);
+    if(!fecha) return null;
+    return { fecha, cost: Number(row['Total Cost'])||0, objetivo:(row['OBJETIVO']||'').toString().trim() };
+  }).filter(Boolean);
+
+  ALL_GOOGLE = RAW.googleDaily.map(row => {
+    const fecha = parseAdDate(row);
+    if(!fecha) return null;
+    return { fecha, cost: Number(row['Cost'])||0, objetivo:(row['OBJETIVO']||'').toString().trim() };
+  }).filter(Boolean);
+}
+
+function renderStatusBadges(){
+  const maxFecha = ALL_LEADS.reduce((max,l) => l.fecha > max ? l.fecha : max, new Date(2000,0,1));
+  document.getElementById('statusBadges').innerHTML = `
+    <span class="status-badge live">🟢 Conectado en vivo (Corte CRM: ${fmtDDMmm(maxFecha)})</span>
+    <span class="status-badge warn">⚠️ Sync manual Google (Hoja Andrei)</span>
+  `;
+}
+
+/* =========================================================================
+   FILTER RANGE RESOLUTION
+   ========================================================================= */
+function resolveRange(){
+  const today = new Date(); today.setHours(0,0,0,0);
+  let start, end;
+  switch(filters.preset){
+    case '7':
+      end = new Date(today); start = new Date(today); start.setDate(start.getDate()-6); break;
+    case '14':
+      end = new Date(today); start = new Date(today); start.setDate(start.getDate()-13); break;
+    case 'thisMonth':
+      start = new Date(today.getFullYear(), today.getMonth(), 1); end = new Date(today); break;
+    case 'lastMonth':
+      start = new Date(today.getFullYear(), today.getMonth()-1, 1);
+      end = new Date(today.getFullYear(), today.getMonth(), 0); break;
+    case 'custom':
+      start = filters.customStart ? new Date(filters.customStart) : new Date(2026,0,1);
+      end = filters.customEnd ? new Date(filters.customEnd) : new Date(today); break;
+    case 'all':
+    default:
+      start = new Date(2026,0,1); end = new Date(2026,11,31); break;
+  }
+  end.setHours(23,59,59,999);
+  return {start, end};
+}
+function previousRange({start,end}){
+  const lengthMs = end - start;
+  const prevEnd = new Date(start.getTime() - 1);
+  const prevStart = new Date(prevEnd.getTime() - lengthMs);
+  return {start:prevStart, end:prevEnd};
+}
+
+function filterByRange(arr, range){
+  return arr.filter(x => x.fecha >= range.start && x.fecha <= range.end);
+}
+
+/* =========================================================================
+   KPI COMPUTATION
+   ========================================================================= */
+function computeKPIs(leads, metaRows, googleRows){
+  const inversionMeta = metaRows.reduce((s,r)=>s+r.cost,0);
+  const inversionGoogle = googleRows.reduce((s,r)=>s+r.cost,0);
+  const inversion = inversionMeta + inversionGoogle;
+
+  const registros = leads.length;
+  const cpl = registros ? inversion/registros : 0;
+
+  const clientes = leads.filter(l => l.arrendamiento === 'SI').length;
+  const onboardedEstatus = leads.filter(l => l.estatus === 'Onboarded').length;
+  const rechazados = leads.filter(l => l.estatus === 'Rechazado').length;
+  const costoOnboardedRechazados = (onboardedEstatus+rechazados) ? inversion/(onboardedEstatus+rechazados) : 0;
+
+  const parametricoSI = leads.filter(l => l.parametrico === 'SI').length;
+  const buroSI = leads.filter(l => l.buro === 'SI').length;
+
+  const costoParametrico = parametricoSI ? inversion/parametricoSI : 0;
+  const costoBuro = buroSI ? inversion/buroSI : 0;
+  const cacArrendamiento = clientes ? inversion/clientes : 0;
+
+  return { inversion, inversionMeta, inversionGoogle, registros, cpl, clientes,
+    onboardedEstatus, rechazados, costoOnboardedRechazados,
+    parametricoSI, buroSI, costoParametrico, costoBuro, cacArrendamiento };
+}
+
+function deltaPct(curr, prev){
+  if(!prev) return null;
+  return ((curr-prev)/prev)*100;
+}
+
+/* =========================================================================
+   ALERTS
+   ========================================================================= */
+function renderAlerts(leads, k){
+  const alerts = [];
+
+  // Webforms cost/lead this range vs previous range
+  const range = resolveRange();
+  const prevRange = previousRange(range);
+  const metaWebformsNow = ALL_META.filter(r => r.fecha>=range.start && r.fecha<=range.end && r.objetivo==='WEBFORMS');
+  const metaWebformsPrev = ALL_META.filter(r => r.fecha>=prevRange.start && r.fecha<=prevRange.end && r.objetivo==='WEBFORMS');
+  const leadsWebNow = leads.filter(l => l.fuente==='fb' || l.fuente==='ig' || l.fuente==='google');
+  const leadsWebPrev = filterByRange(ALL_LEADS, prevRange).filter(l => l.fuente==='fb'||l.fuente==='ig'||l.fuente==='google');
+  const costNow = metaWebformsNow.reduce((s,r)=>s+r.cost,0);
+  const costPrev = metaWebformsPrev.reduce((s,r)=>s+r.cost,0);
+  const cplNow = leadsWebNow.length ? costNow/leadsWebNow.length : 0;
+  const cplPrev = leadsWebPrev.length ? costPrev/leadsWebPrev.length : 0;
+  if(cplPrev > 0){
+    const d = deltaPct(cplNow, cplPrev);
+    alerts.push({ color: d>0 ? 'var(--accent)':'var(--success)',
+      title: `Costo/Lead Webforms ${d>0?'subió':'bajó'} ${Math.abs(d).toFixed(0)}%`,
+      text: `vs. período anterior comparable (${fmtMXN(cplPrev)} → ${fmtMXN(cplNow)})` });
+  }
+
+  // Bottleneck: biggest stage-to-stage drop (NIP -> Buró -> Paramétrico -> Cliente)
+  const nip = leads.filter(l=>l.nip==='SI').length;
+  const buro = leads.filter(l=>l.buro==='SI').length;
+  const param = leads.filter(l=>l.parametrico==='SI').length;
+  const cli = leads.filter(l=>l.arrendamiento==='SI').length;
+  const stages = [['Registros→NIP', leads.length, nip], ['NIP→Buró', nip, buro], ['Buró→Paramétrico', buro, param], ['Paramétrico→Cliente', param, cli]];
+  let worst = null;
+  stages.forEach(([label, from, to]) => {
+    if(from > 0){
+      const dropPct = 100 - (to/from*100);
+      if(!worst || dropPct > worst.dropPct) worst = {label, dropPct};
+    }
+  });
+  if(worst) alerts.push({ color:'var(--warning)',
+    title: `Cuello de botella: ${worst.label}`,
+    text: `Caída de ${worst.dropPct.toFixed(0)}% entre estas dos etapas en el período seleccionado.` });
+
+  // CRM vs Meta discrepancy (registration completed self-reported vs CRM leads with fb/ig source)
+  const metaSelfReported = metaWebformsNow.length; // rows, not a count metric — use website registrations completed field instead
+  // recompute properly using stored raw rows for the range
+  const metaRowsRange = RAW.metaDaily.filter(r => {
+    const f = parseAdDate(r);
+    return f && f>=range.start && f<=range.end;
+  });
+  const metaSelfReg = metaRowsRange.reduce((s,r)=> s + (Number(r['Website registrations completed'])||0), 0);
+  const crmMetaLeads = leadsWebNow.filter(l=>l.fuente==='fb'||l.fuente==='ig').length;
+  if(metaSelfReg > 0){
+    const diff = ((crmMetaLeads - metaSelfReg)/metaSelfReg)*100;
+    alerts.push({ color:'var(--info)',
+      title: `Discrepancia CRM vs Meta: CRM registra ${diff>0?'+':''}${diff.toFixed(0)}%`,
+      text: `CRM: ${fmtInt(crmMetaLeads)} registros de Meta (fb/ig) vs. ${fmtInt(metaSelfReg)} auto-reportados por la plataforma.` });
+  }
+
+  const banner = document.getElementById('alertBanner');
+  if(!alerts.length){
+    banner.innerHTML = `<div class="alert-card" style="--card-color:var(--success)"><div class="a-title">✅ Sin alertas relevantes</div><div class="a-text">No se detectaron variaciones significativas en el período seleccionado.</div></div>`;
+    return;
+  }
+  banner.innerHTML = alerts.slice(0,5).map(a => `
+    <div class="alert-card" style="--card-color:${a.color}">
+      <div class="a-title">${a.title}</div>
+      <div class="a-text">${a.text}</div>
+    </div>`).join('');
+}
+
+/* =========================================================================
+   KPI CARDS
+   ========================================================================= */
+function renderKPICards(k, kPrev){
+  const cards = [
+    {label:'Inversión Total', value:fmtMXN(k.inversion), color:'var(--info)', prev:kPrev && kPrev.inversion},
+    {label:'Registros CRM', value:fmtInt(k.registros), color:'var(--purple)', prev:kPrev && kPrev.registros},
+    {label:'CPL Promedio', value:fmtMXN(k.cpl), color:'var(--warning)', prev:kPrev && kPrev.cpl},
+    {label:'Onboarded (Clientes Finales)', value:fmtInt(k.clientes), color:'var(--success)', prev:kPrev && kPrev.clientes},
+    {label:'Costo por Onboarded + Rechazados', value:fmtMXN(k.costoOnboardedRechazados), color:'var(--accent)', prev:kPrev && kPrev.costoOnboardedRechazados}
+  ];
+  const grid = document.getElementById('kpiGridMain');
+  grid.innerHTML = cards.map(c => {
+    let deltaHtml = '';
+    if(filters.compare && c.prev !== undefined && c.prev !== null){
+      const rawVal = parseFloat((c.value+'').replace(/[^0-9.-]/g,''));
+      const rawPrev = parseFloat((''+c.prev).replace(/[^0-9.-]/g,'')) || c.prev;
+      const d = deltaPct(rawVal, c.prev);
+      if(d !== null && isFinite(d)){
+        const cls = d>=0 ? 'up':'down';
+        deltaHtml = `<div class="kpi-delta ${cls}">${d>=0?'↑':'↓'} ${Math.abs(d).toFixed(1)}% vs. período anterior</div>`;
+      }
+    }
+    return `<div class="kpi-card" style="--card-color:${c.color}">
+      <div class="kpi-label">${c.label}</div>
+      <div class="kpi-value">${c.value}</div>
+      ${deltaHtml}
+    </div>`;
+  }).join('');
+
+  const smallCards = [
+    {label:'Costo por Paramétrico Aprobado', value:fmtMXN(k.costoParametrico), sub:`${fmtInt(k.parametricoSI)} usuarios`},
+    {label:'Costo por Buró Aprobado', value:fmtMXN(k.costoBuro), sub:`${fmtInt(k.buroSI)} usuarios`},
+    {label:'CAC por Arrendamiento', value:fmtMXN(k.cacArrendamiento), sub:`${fmtInt(k.clientes)} usuarios`}
+  ];
+  document.getElementById('kpiGridSmall').innerHTML = smallCards.map(c => `
+    <div class="kpi-card" style="--card-color:var(--secondary)">
+      <div class="kpi-label">${c.label}</div>
+      <div class="kpi-value">${c.value}</div>
+      <div class="kpi-sub">${c.sub}</div>
+    </div>`).join('');
+}
+
+/* =========================================================================
+   MAIN CHART
+   ========================================================================= */
+function bucketKey(d){ return filters.granularity==='week' ? isoWeekKey(d) : monthKey(d); }
+function bucketLabel(key){
+  if(filters.granularity==='week') return key;
+  const [y,m] = key.split('-');
+  return `${MES_ES_LARGO[parseInt(m,10)-1].slice(0,3)} ${y}`;
+}
+
+function renderMainChart(leads, metaRows, googleRows){
+  const buckets = {};
+  const ensure = k => { if(!buckets[k]) buckets[k] = {metaCost:0, googleCost:0, onboarded:0, buro:0, parametrico:0}; return buckets[k]; };
+
+  metaRows.forEach(r => { ensure(bucketKey(r.fecha)).metaCost += r.cost; });
+  googleRows.forEach(r => { ensure(bucketKey(r.fecha)).googleCost += r.cost; });
+  leads.forEach(l => {
+    const b = ensure(bucketKey(l.fecha));
+    if(l.arrendamiento==='SI') b.onboarded += 1;
+    if(l.buro==='SI') b.buro += 1;
+    if(l.parametrico==='SI') b.parametrico += 1;
+  });
+
+  const keys = Object.keys(buckets).sort();
+  const labels = keys.map(bucketLabel);
+  const metaCosts = keys.map(k=>buckets[k].metaCost);
+  const googleCosts = keys.map(k=>buckets[k].googleCost);
+  const onboardedSeries = keys.map(k=>buckets[k].onboarded);
+  const buroSeries = keys.map(k=>buckets[k].buro);
+  const paramSeries = keys.map(k=>buckets[k].parametrico);
+
+  const datasets = [
+    { type:'bar', label:'Inversión Meta', data:metaCosts, backgroundColor:'#3498db', stack:'inv', yAxisID:'y' },
+    { type:'bar', label:'Inversión Google', data:googleCosts, backgroundColor:'#f39c12', stack:'inv', yAxisID:'y' }
+  ];
+  if(document.getElementById('serieOnboarded').checked)
+    datasets.push({ type:'line', label:'Onboarded (Clientes)', data:onboardedSeries, borderColor:'#27ae60', backgroundColor:'#27ae60', yAxisID:'y1', tension:.35, borderWidth:3 });
+  if(document.getElementById('serieBuro').checked)
+    datasets.push({ type:'line', label:'Buró aprobado', data:buroSeries, borderColor:'#9b59b6', backgroundColor:'#9b59b6', yAxisID:'y1', tension:.35, borderWidth:3 });
+  if(document.getElementById('serieParametrico').checked)
+    datasets.push({ type:'line', label:'Paramétrico aprobado', data:paramSeries, borderColor:'#e74c3c', backgroundColor:'#e74c3c', yAxisID:'y1', tension:.35, borderWidth:3 });
+
+  if(chartMain) chartMain.destroy();
+  chartMain = new Chart(document.getElementById('chartMain').getContext('2d'), {
+    data: { labels, datasets },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ labels:{ color:'#ecf0f1' } }, tooltip:{ backgroundColor:'rgba(26,35,50,.95)', padding:12 } },
+      scales:{
+        x:{ stacked:true, grid:{ color:'rgba(255,255,255,.05)' }, ticks:{ color:'#95a5a6', maxRotation:45, minRotation:45 } },
+        y:{ stacked:true, position:'left', grid:{ color:'rgba(255,255,255,.05)' }, ticks:{ color:'#95a5a6', callback:v=>fmtMXN(v) } },
+        y1:{ position:'right', grid:{ display:false }, ticks:{ color:'#95a5a6', stepSize:1 } }
+      }
+    }
+  });
+}
+
+/* =========================================================================
+   CHANNEL TABLE
+   ========================================================================= */
+function classifyChannel(l){
+  if(l.fuente==='fb' || l.fuente==='ig') return 'Meta Ads';
+  if(l.fuente==='google') return 'Google Ads';
+  return 'Orgánico / Sin Fuente';
+}
+
+function renderChannelTable(leads, metaRows, googleRows){
+  const inversionMeta = metaRows.reduce((s,r)=>s+r.cost,0);
+  const inversionGoogle = googleRows.reduce((s,r)=>s+r.cost,0);
+
+  const groups = { 'Meta Ads':[], 'Google Ads':[], 'Orgánico / Sin Fuente':[] };
+  leads.forEach(l => groups[classifyChannel(l)].push(l));
+
+  const rows = [
+    { canal:'Meta Ads', inv:inversionMeta, leadsArr:groups['Meta Ads'] },
+    { canal:'Google Ads', inv:inversionGoogle, leadsArr:groups['Google Ads'] },
+    { canal:'Orgánico / Sin Fuente', inv:0, leadsArr:groups['Orgánico / Sin Fuente'] }
+  ];
+
+  let totalInv=0, totalReg=0, totalOnb=0;
+  const bodyRows = rows.map(r => {
+    const reg = r.leadsArr.length;
+    const onb = r.leadsArr.filter(l=>l.arrendamiento==='SI').length;
+    const cpl = reg ? r.inv/reg : null;
+    const convPct = reg ? (onb/reg*100) : 0;
+    const costoOnb = onb ? r.inv/onb : null;
+    totalInv+=r.inv; totalReg+=reg; totalOnb+=onb;
+    return `<tr>
+      <td>${r.canal}</td>
+      <td>${fmtMXN(r.inv)}</td>
+      <td>${fmtInt(reg)}</td>
+      <td>${cpl!==null ? fmtMXN(cpl) : '—'}</td>
+      <td>${fmtInt(onb)}</td>
+      <td>${fmtPct(convPct)}</td>
+      <td>${costoOnb!==null ? fmtMXN(costoOnb) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const totalCpl = totalReg ? totalInv/totalReg : null;
+  const totalConv = totalReg ? (totalOnb/totalReg*100) : 0;
+  const totalCostoOnb = totalOnb ? totalInv/totalOnb : null;
+
+  document.getElementById('channelTableBody').innerHTML = bodyRows + `
+    <tr class="total-row">
+      <td>Total</td>
+      <td>${fmtMXN(totalInv)}</td>
+      <td>${fmtInt(totalReg)}</td>
+      <td>${totalCpl!==null?fmtMXN(totalCpl):'—'}</td>
+      <td>${fmtInt(totalOnb)}</td>
+      <td>${fmtPct(totalConv)}</td>
+      <td>${totalCostoOnb!==null?fmtMXN(totalCostoOnb):'—'}</td>
+    </tr>`;
+}
+
+/* =========================================================================
+   MASTER RENDER
+   ========================================================================= */
+function applyFiltersAndRender(){
+  const range = resolveRange();
+  const leads = filterByRange(ALL_LEADS, range);
+  const metaRows = filterByRange(ALL_META, range);
+  const googleRows = filterByRange(ALL_GOOGLE, range);
+  const k = computeKPIs(leads, metaRows, googleRows);
+
+  let kPrev = null;
+  if(filters.compare){
+    const prevRange = previousRange(range);
+    const prevLeads = filterByRange(ALL_LEADS, prevRange);
+    const prevMeta = filterByRange(ALL_META, prevRange);
+    const prevGoogle = filterByRange(ALL_GOOGLE, prevRange);
+    kPrev = computeKPIs(prevLeads, prevMeta, prevGoogle);
+  }
+
+  renderAlerts(leads, k);
+  renderKPICards(k, kPrev);
+  renderMainChart(leads, metaRows, googleRows);
+  renderChannelTable(leads, metaRows, googleRows);
+}
+
+/* =========================================================================
+   EVENTS
+   ========================================================================= */
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    filters.preset = btn.dataset.preset;
+    document.getElementById('customRange').classList.toggle('show', filters.preset==='custom');
+    if(RAW.leadsUTM.length) applyFiltersAndRender();
+  });
+});
+document.getElementById('customStart').addEventListener('change', e => { filters.customStart = e.target.value; if(filters.preset==='custom') applyFiltersAndRender(); });
+document.getElementById('customEnd').addEventListener('change', e => { filters.customEnd = e.target.value; if(filters.preset==='custom') applyFiltersAndRender(); });
+document.getElementById('compareToggle').addEventListener('change', e => { filters.compare = e.target.checked; applyFiltersAndRender(); });
+document.querySelectorAll('#granularityToggle button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#granularityToggle button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    filters.granularity = btn.dataset.g;
+    applyFiltersAndRender();
+  });
+});
+['serieOnboarded','serieBuro','serieParametrico'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => applyFiltersAndRender());
+});
+document.querySelectorAll('.tab-btn:not([disabled])').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-'+btn.dataset.tab).classList.add('active');
+  });
+});
+
+init();
+</script>
+</body>
+</html>

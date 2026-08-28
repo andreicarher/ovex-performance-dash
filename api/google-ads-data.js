@@ -25,6 +25,14 @@
 
 const API_VERSION = process.env.GOOGLE_ADS_API_VERSION || "v23";
 
+// GAQL's DURING operator only accepts a fixed set of literals (LAST_30_DAYS,
+// THIS_MONTH, YESTERDAY, etc.) — there is no THIS_YEAR/LAST_YEAR literal.
+// A full-year range has to be spelled out explicitly with BETWEEN.
+function currentYearRange() {
+  const year = new Date().getFullYear();
+  return { start: `${year}-01-01`, end: `${year}-12-31` };
+}
+
 // ---------------------------------------------------------------------------
 // Caching. Two layers:
 //  1. Access token cache (OAuth tokens last ~1h — no need to refresh every call).
@@ -111,6 +119,8 @@ async function gaqlSearch(query) {
 }
 
 async function fetchGoogleAdsData() {
+  const { start, end } = currentYearRange();
+
   // Campaign-level daily performance — replaces the "Query Google 2026" Sheet tab.
   // `campaign.advertising_channel_type` is included so Performance Max campaigns
   // (which DO show up here automatically, unlike some other ad platforms) can be
@@ -125,7 +135,7 @@ async function fetchGoogleAdsData() {
       metrics.impressions,
       metrics.conversions
     FROM campaign
-    WHERE segments.date DURING THIS_YEAR
+    WHERE segments.date BETWEEN '${start}' AND '${end}'
     ORDER BY segments.date ASC
   `);
 
@@ -152,7 +162,7 @@ async function fetchGoogleAdsData() {
       metrics.impressions,
       metrics.conversions
     FROM keyword_view
-    WHERE segments.date DURING THIS_YEAR
+    WHERE segments.date BETWEEN '${start}' AND '${end}'
     ORDER BY segments.date ASC
   `);
 

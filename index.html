@@ -259,10 +259,10 @@
     <div class="table-card" id="keywordSection">
       <div class="chart-title" style="margin-bottom:1.25rem;">Desglose Google Ads — Keywords</div>
       <table>
-        <thead><tr><th>Tema</th><th>Keyword</th><th>Estado</th><th>Registros</th><th>% Onboarded</th><th>Onboarded</th><th>Rechazadas</th><th>% Rechazados</th><th>Con Arrendamiento</th></tr></thead>
+        <thead><tr><th>Tema</th><th>Keyword</th><th>Estado</th><th>Inversión</th><th>Registros</th><th>% Onboarded</th><th>Onboarded</th><th>Rechazadas</th><th>% Rechazados</th><th>Con Arrendamiento</th><th>Costo/Onboarded</th></tr></thead>
         <tbody id="keywordTableBody"></tbody>
       </table>
-      <div class="note">Google Ads no reporta gasto desglosado por keyword en el Sheet actual, así que no se muestra costo por término — solo volumen, calidad y estado (Activa/Pausada). "% Onboarded" y "% Rechazados" se calculan sobre el total de registros de esa keyword.</div>
+      <div class="note" id="keywordNote">Google Ads no reporta gasto desglosado por keyword en el Sheet actual, así que no se muestra costo por término — solo volumen, calidad y estado (Activa/Pausada). "% Onboarded" y "% Rechazados" se calculan sobre el total de registros de esa keyword.</div>
     </div>
 
     <div class="table-card">
@@ -397,6 +397,9 @@ function parseAnyDate(raw){
   if(!str) return null;
   let m = str.match(/^Date\((\d+),(\d+),(\d+)/);
   if(m) return new Date(Number(m[1]), Number(m[2]), Number(m[3]));
+  // ISO "YYYY-MM-DD" — used by the live Google Ads API endpoint.
+  m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(m) return new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
   if(str.includes('/')){
     const p = str.split('/');
     if(p.length === 3){
@@ -464,11 +467,13 @@ function daysBetween(a,b){ return Math.round((b-a)/86400000); }
 /* =========================================================================
    GLOBAL STATE
    ========================================================================= */
-let RAW = { metaDaily:[], googleDaily:[], leadsUTM:[], leadsNoUTM:[], keywordStatus:[] };
+let RAW = { metaDaily:[], googleDaily:[], googleKeywordDaily:[], leadsUTM:[], leadsNoUTM:[], keywordStatus:[] };
 let ALL_LEADS = [];
 let ALL_META = [];
 let ALL_GOOGLE = [];
-let KEYWORD_STATUS = {}; // { keywordLowercase: 'Activa'|'Pausada' }
+let ALL_GOOGLE_KEYWORDS = []; // real per-keyword cost, from the live Google Ads endpoint
+let GOOGLE_ADS_LIVE = false; // true once /api/google-ads-data answers successfully
+let KEYWORD_STATUS = {}; // { keywordLowercase: 'Activa'|'Pausada' } — Sheet fallback only
 let chartMain = null;
 
 let filters = { preset:'all', customStart:null, customEnd:null, compare:false, granularity:'month' };
@@ -479,16 +484,36 @@ let tab2Channel = 'all';
    ========================================================================= */
 async function init(){
   try{
-    const [metaDaily, googleDaily, leadsUTM, leadsNoUTM] = await Promise.all([
+    const [metaDaily, leadsUTM, leadsNoUTM] = await Promise.all([
       fetchSheetTab(TABS.metaDaily),
-      fetchSheetTab(TABS.googleDaily),
       fetchSheetTab(TABS.leadsUTM),
       fetchSheetTab(TABS.leadsNoUTM)
     ]);
-    RAW.metaDaily = metaDaily; RAW.googleDaily = googleDaily;
+    RAW.metaDaily = metaDaily;
     RAW.leadsUTM = leadsUTM; RAW.leadsNoUTM = leadsNoUTM;
 
-    // Keyword status is supplementary — don't let it break the whole dashboard if the tab name differs.
+    // Google Ads now comes live from our own serverless endpoint (real-time,
+    // includes real per-keyword cost) instead of the "Query Google 2026" Sheet
+    // tab. If the endpoint is ever unavailable, fall back to the Sheet so the
+    // dashboard keeps working — it just loses the live/keyword-cost upgrade
+    // for that session.
+    try{
+      const res = await fetch('/api/google-ads-data');
+      if(!res.ok){ const j = await res.json().catch(()=>({})); throw new Error(j.detail || `HTTP ${res.status}`); }
+      const live = await res.json();
+      RAW.googleDaily = live.campaignDaily || [];
+      RAW.googleKeywordDaily = live.keywordDaily || [];
+      GOOGLE_ADS_LIVE = true;
+    }catch(err){
+      console.warn('Google Ads en vivo no disponible, usando el Sheet como respaldo:', err.message);
+      RAW.googleDaily = await fetchSheetTab(TABS.googleDaily);
+      RAW.googleKeywordDaily = [];
+      GOOGLE_ADS_LIVE = false;
+    }
+
+    // Keyword status (Activa/Pausada) — supplementary fallback for when the
+    // live endpoint isn't available; the endpoint itself already reports
+    // each keyword's real status when it is.
     const kw = await fetchSheetTabSafe(TABS.keywordStatus);
     RAW.keywordStatus = kw.rows;
     if(kw.error) console.warn('Estatus Keyword no disponible:', kw.error);
@@ -569,6 +594,22 @@ function processRawData(){
     };
   }).filter(Boolean);
 
+  // Real per-keyword cost, only populated when the live Google Ads endpoint
+  // answered (see init()). Empty array falls back gracefully everywhere it's used.
+  ALL_GOOGLE_KEYWORDS = RAW.googleKeywordDaily.map(row => {
+    const fecha = parseAnyDate(row['Date']);
+    if(!fecha) return null;
+    return {
+      fecha,
+      campaignName: (row['Campaign']||'').toString().trim(),
+      keyword: (row['Keyword']||'').toString().trim().toLowerCase(),
+      estado: (row['Estado']||'').toString().trim(),
+      cost: Number(row['Cost'])||0,
+      clicks: Number(row['Clicks'])||0,
+      conversions: Number(row['Conversions'])||0
+    };
+  }).filter(Boolean);
+
   KEYWORD_STATUS = {};
   RAW.keywordStatus.forEach(row => {
     const kw = (row['Keyword']||'').toString().trim().toLowerCase();
@@ -579,9 +620,12 @@ function processRawData(){
 
 function renderStatusBadges(){
   const maxFecha = ALL_LEADS.reduce((max,l) => l.fecha > max ? l.fecha : max, new Date(2000,0,1));
+  const googleBadge = GOOGLE_ADS_LIVE
+    ? `<span class="status-badge live">🟢 Google Ads API en vivo</span>`
+    : `<span class="status-badge warn">⚠️ Google Ads vía Sheet (respaldo — API no disponible)</span>`;
   document.getElementById('statusBadges').innerHTML = `
     <span class="status-badge live">🟢 Conectado en vivo (Corte CRM: ${fmtDDMmm(maxFecha)})</span>
-    <span class="status-badge warn">⚠️ Sync manual Google (Hoja Andrei)</span>
+    ${googleBadge}
   `;
 }
 
@@ -886,25 +930,41 @@ function classifyTema(keyword){
   return 'Otros';
 }
 function renderKeywordTable(range){
+  const noteEl = document.getElementById('keywordNote');
+  if(noteEl){
+    noteEl.innerHTML = GOOGLE_ADS_LIVE
+      ? 'Costo por keyword en vivo desde la API de Google Ads. "% Onboarded" y "% Rechazados" se calculan sobre el total de registros de esa keyword.'
+      : 'API de Google Ads no disponible en esta carga — usando el Sheet como respaldo, sin costo por keyword. "% Onboarded" y "% Rechazados" se calculan sobre el total de registros de esa keyword.';
+  }
   const leads = filterByRange(ALL_LEADS, range).filter(l => l.fuente==='google' && l.termino);
   const kwMap = {};
   leads.forEach(l => {
-    if(!kwMap[l.termino]) kwMap[l.termino] = {registros:0, onboarded:0, rechazados:0, clientes:0};
+    if(!kwMap[l.termino]) kwMap[l.termino] = {registros:0, onboarded:0, rechazados:0, clientes:0, cost:0, liveEstado:null};
     const d = kwMap[l.termino];
     d.registros += 1;
     if(isEvaluado(l)) d.onboarded += 1;
     if(l.estatus==='Rechazado') d.rechazados += 1;
     if(isCliente(l)) d.clientes += 1;
   });
-  const keys = Object.keys(kwMap).sort((a,b)=>kwMap[b].registros-kwMap[a].registros);
+
+  // Real per-keyword cost from the live endpoint (empty array if it wasn't
+  // available this session — everything below degrades gracefully to '—').
+  filterByRange(ALL_GOOGLE_KEYWORDS, range).forEach(r => {
+    if(!kwMap[r.keyword]) kwMap[r.keyword] = {registros:0, onboarded:0, rechazados:0, clientes:0, cost:0, liveEstado:null};
+    kwMap[r.keyword].cost += r.cost;
+    kwMap[r.keyword].liveEstado = r.estado; // last value wins, status rarely changes day to day
+  });
+
+  const keys = Object.keys(kwMap).sort((a,b)=>(kwMap[b].cost||kwMap[b].registros)-(kwMap[a].cost||kwMap[a].registros));
   document.getElementById('keywordTableBody').innerHTML = keys.map(k => {
     const d = kwMap[k];
-    const status = KEYWORD_STATUS[k] || '—';
+    const status = d.liveEstado || KEYWORD_STATUS[k] || '—';
     const badgeClass = status==='Activa' ? 'active' : (status==='Pausada' ? 'paused' : '');
     const pctOnboarded = d.registros ? (d.onboarded/d.registros*100) : 0;
     const pctRechazados = d.registros ? (d.rechazados/d.registros*100) : 0;
-    return `<tr><td>${classifyTema(k)}</td><td>${k}</td><td>${status!=='—'?`<span class="badge ${badgeClass}">${status}</span>`:'—'}</td><td>${fmtInt(d.registros)}</td><td>${fmtPct(pctOnboarded)}</td><td>${fmtInt(d.onboarded)}</td><td>${fmtInt(d.rechazados)}</td><td>${fmtPct(pctRechazados)}</td><td>${fmtInt(d.clientes)}</td></tr>`;
-  }).join('') || `<tr><td colspan="9" style="color:var(--text-muted)">Sin registros de Google Ads en el período seleccionado.</td></tr>`;
+    const costoOnboarded = d.onboarded ? d.cost/d.onboarded : null;
+    return `<tr><td>${classifyTema(k)}</td><td>${k}</td><td>${status!=='—'?`<span class="badge ${badgeClass}">${status}</span>`:'—'}</td><td>${d.cost?fmtMXN(d.cost):'—'}</td><td>${fmtInt(d.registros)}</td><td>${fmtPct(pctOnboarded)}</td><td>${fmtInt(d.onboarded)}</td><td>${fmtInt(d.rechazados)}</td><td>${fmtPct(pctRechazados)}</td><td>${fmtInt(d.clientes)}</td><td>${costoOnboarded!==null?fmtMXN(costoOnboarded):'—'}</td></tr>`;
+  }).join('') || `<tr><td colspan="11" style="color:var(--text-muted)">Sin registros de Google Ads en el período seleccionado.</td></tr>`;
 }
 
 /* =========================================================================

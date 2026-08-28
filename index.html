@@ -473,6 +473,7 @@ let ALL_META = [];
 let ALL_GOOGLE = [];
 let ALL_GOOGLE_KEYWORDS = []; // real per-keyword cost, from the live Google Ads endpoint
 let GOOGLE_ADS_LIVE = false; // true once /api/google-ads-data answers successfully
+let META_ADS_LIVE = false; // true once /api/meta-ads-data answers successfully
 let KEYWORD_STATUS = {}; // { keywordLowercase: 'Activa'|'Pausada' } — Sheet fallback only
 let chartMain = null;
 
@@ -482,34 +483,47 @@ let tab2Channel = 'all';
 /* =========================================================================
    INIT
    ========================================================================= */
+async function fetchMetaLiveOrFallback(){
+  try{
+    const res = await fetch('/api/meta-ads-data');
+    if(!res.ok){ const j = await res.json().catch(()=>({})); throw new Error(j.detail || `HTTP ${res.status}`); }
+    const live = await res.json();
+    return { rows: live.dailyAdLevel || [], isLive: true };
+  }catch(err){
+    console.warn('Meta Ads en vivo no disponible, usando el Sheet como respaldo:', err.message);
+    return { rows: await fetchSheetTab(TABS.metaDaily), isLive: false };
+  }
+}
+async function fetchGoogleLiveOrFallback(){
+  try{
+    const res = await fetch('/api/google-ads-data');
+    if(!res.ok){ const j = await res.json().catch(()=>({})); throw new Error(j.detail || `HTTP ${res.status}`); }
+    const live = await res.json();
+    return { campaignRows: live.campaignDaily || [], keywordRows: live.keywordDaily || [], isLive: true };
+  }catch(err){
+    console.warn('Google Ads en vivo no disponible, usando el Sheet como respaldo:', err.message);
+    return { campaignRows: await fetchSheetTab(TABS.googleDaily), keywordRows: [], isLive: false };
+  }
+}
 async function init(){
   try{
-    const [metaDaily, leadsUTM, leadsNoUTM] = await Promise.all([
-      fetchSheetTab(TABS.metaDaily),
+    // Meta and Google now come live from our own serverless endpoints
+    // (real-time; Google's includes real per-keyword cost) instead of their
+    // Sheet tabs. Both run in parallel with the CRM leads fetch — Meta's
+    // endpoint in particular can be slow (full-year, daily, ad-level data),
+    // so this matters for total load time, not just code cleanliness. If an
+    // endpoint is ever unavailable, that source falls back to its Sheet tab
+    // automatically so the dashboard keeps working — it just loses the live
+    // upgrade for that session (see the status badges).
+    const [leadsUTM, leadsNoUTM, metaResult, googleResult] = await Promise.all([
       fetchSheetTab(TABS.leadsUTM),
-      fetchSheetTab(TABS.leadsNoUTM)
+      fetchSheetTab(TABS.leadsNoUTM),
+      fetchMetaLiveOrFallback(),
+      fetchGoogleLiveOrFallback()
     ]);
-    RAW.metaDaily = metaDaily;
     RAW.leadsUTM = leadsUTM; RAW.leadsNoUTM = leadsNoUTM;
-
-    // Google Ads now comes live from our own serverless endpoint (real-time,
-    // includes real per-keyword cost) instead of the "Query Google 2026" Sheet
-    // tab. If the endpoint is ever unavailable, fall back to the Sheet so the
-    // dashboard keeps working — it just loses the live/keyword-cost upgrade
-    // for that session.
-    try{
-      const res = await fetch('/api/google-ads-data');
-      if(!res.ok){ const j = await res.json().catch(()=>({})); throw new Error(j.detail || `HTTP ${res.status}`); }
-      const live = await res.json();
-      RAW.googleDaily = live.campaignDaily || [];
-      RAW.googleKeywordDaily = live.keywordDaily || [];
-      GOOGLE_ADS_LIVE = true;
-    }catch(err){
-      console.warn('Google Ads en vivo no disponible, usando el Sheet como respaldo:', err.message);
-      RAW.googleDaily = await fetchSheetTab(TABS.googleDaily);
-      RAW.googleKeywordDaily = [];
-      GOOGLE_ADS_LIVE = false;
-    }
+    RAW.metaDaily = metaResult.rows; META_ADS_LIVE = metaResult.isLive;
+    RAW.googleDaily = googleResult.campaignRows; RAW.googleKeywordDaily = googleResult.keywordRows; GOOGLE_ADS_LIVE = googleResult.isLive;
 
     // Keyword status (Activa/Pausada) — supplementary fallback for when the
     // live endpoint isn't available; the endpoint itself already reports
@@ -571,14 +585,33 @@ function processRawData(){
   ALL_META = RAW.metaDaily.map(row => {
     const fecha = parseAdDate(row);
     if(!fecha) return null;
+    // Live API rows carry Meta's own field names/casing (Campaign, Ad, Cost,
+    // Objective=Meta's real enum) vs. the Sheet's manually-tagged columns
+    // (Campaign name, Ad name, Total Cost, OBJETIVO=Andrei's own WEBFORMS/
+    // MENSAJES taxonomy). 'Objective' only exists on live rows — use its
+    // presence to tell the two shapes apart and translate live rows into
+    // the same WEBFORMS/MENSAJES vocabulary the rest of the dashboard
+    // already filters on, instead of silently passing through Meta's raw
+    // enum (which would make those filters stop matching anything).
+    const isLiveRow = row['Objective'] !== undefined;
+    const campaignName = ((isLiveRow ? row['Campaign'] : row['Campaign name'])||'').toString().trim();
+    let objetivo;
+    if(!isLiveRow){
+      objetivo = (row['OBJETIVO']||'').toString().trim();
+    } else {
+      const metaObjective = (row['Objective']||'').toString().trim();
+      if(campaignName.toLowerCase().includes('mensaje')) objetivo = 'MENSAJES';
+      else if(metaObjective === 'OUTCOME_LEADS') objetivo = 'WEBFORMS';
+      else objetivo = metaObjective; // not one of ours — passed through as-is, harmless
+    }
     return {
-      fecha, cost: Number(row['Total Cost'])||0,
-      objetivo:(row['OBJETIVO']||'').toString().trim(),
-      etapa:(row['ETAPA FUNNEL']||'').toString().trim(),
-      campaignName:(row['Campaign name']||'').toString().trim(),
-      adName:(row['Ad name']||'').toString().trim(),
-      websiteRegCompleted: Number(row['Website registrations completed'])||0,
-      messagingConversations: Number(row['Messaging conversations started'])||0
+      fecha, cost: Number(isLiveRow ? row['Cost'] : row['Total Cost'])||0,
+      objetivo,
+      etapa:(row['ETAPA FUNNEL']||'').toString().trim(), // only the Sheet tags this; empty on live rows
+      campaignName,
+      adName:((isLiveRow ? row['Ad'] : row['Ad name'])||'').toString().trim(),
+      websiteRegCompleted: Number(isLiveRow ? row['RegistrationsCompleted'] : row['Website registrations completed'])||0,
+      messagingConversations: Number(isLiveRow ? row['MessagingConversationsStarted'] : row['Messaging conversations started'])||0
     };
   }).filter(Boolean);
 
@@ -620,11 +653,15 @@ function processRawData(){
 
 function renderStatusBadges(){
   const maxFecha = ALL_LEADS.reduce((max,l) => l.fecha > max ? l.fecha : max, new Date(2000,0,1));
+  const metaBadge = META_ADS_LIVE
+    ? `<span class="status-badge live">🟢 Meta Ads API en vivo</span>`
+    : `<span class="status-badge warn">⚠️ Meta Ads vía Sheet (respaldo — API no disponible)</span>`;
   const googleBadge = GOOGLE_ADS_LIVE
     ? `<span class="status-badge live">🟢 Google Ads API en vivo</span>`
     : `<span class="status-badge warn">⚠️ Google Ads vía Sheet (respaldo — API no disponible)</span>`;
   document.getElementById('statusBadges').innerHTML = `
     <span class="status-badge live">🟢 Conectado en vivo (Corte CRM: ${fmtDDMmm(maxFecha)})</span>
+    ${metaBadge}
     ${googleBadge}
   `;
 }
@@ -744,7 +781,7 @@ function renderAlerts(leads, range){
 
   // Meta discrepancy
   const metaRowsRange = RAW.metaDaily.filter(r => { const f=parseAdDate(r); return f && f>=range.start && f<=range.end; });
-  const metaSelfReg = metaRowsRange.reduce((s,r)=> s + (Number(r['Website registrations completed'])||0), 0);
+  const metaSelfReg = metaRowsRange.reduce((s,r)=> s + (Number(r['Objective']!==undefined ? r['RegistrationsCompleted'] : r['Website registrations completed'])||0), 0);
   const crmMetaLeads = leadsWebNow.filter(l=>l.fuente==='fb'||l.fuente==='ig').length;
   if(metaSelfReg > 0){
     const diff = ((crmMetaLeads - metaSelfReg)/metaSelfReg)*100;

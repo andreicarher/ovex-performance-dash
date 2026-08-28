@@ -26,6 +26,13 @@
 
 const API_VERSION = process.env.META_API_VERSION || "v26.0";
 
+// Extends this function's allowed execution time on Vercel plans that support
+// it (Hobby is hard-capped at 10s regardless of this setting — if you're on
+// Hobby and this keeps timing out even with the monthly-chunking below,
+// that's the ceiling to know about). Harmless to set even if your plan ignores it.
+export const config = { maxDuration: 60 };
+
+
 // ---------------------------------------------------------------------------
 // Caching: no token cache needed (System User tokens don't expire), just a
 // short data cache so dashboard traffic doesn't hammer the API. In-memory,
@@ -44,6 +51,13 @@ const num = (v) => (v === undefined || v === null ? 0 : parseFloat(v));
 const NAMED_ACTION_TYPES = {
   messagingConversationsStarted: "onsite_conversion.messaging_conversation_started_7d",
   leads: "lead",
+  // Best-guess default — verify against Meta Ads Manager's own "Completed
+  // registration" column for a known campaign/date before trusting this in
+  // reporting. Real accounts often surface several registration-adjacent
+  // action_types (complete_registration, offsite_conversion.fb_pixel_complete_registration,
+  // omni_complete_registration, ...add_meta_leads) with DIFFERENT values —
+  // swap the string below if it turns out not to match.
+  registrationsCompleted: "complete_registration",
 };
 
 function extractAction(actionsArray, actionType) {
@@ -74,6 +88,36 @@ async function fetchAllPages(url) {
   return allData;
 }
 
+// A full year of daily, ad-level data in ONE request is what was pushing this
+// past Vercel's function execution limit on a cold cache. Meta's Insights API
+// responds much faster to a narrower time_range, so split the year into
+// monthly chunks and fetch them CONCURRENTLY — total wall-clock time ends up
+// close to the slowest single month instead of the sum of all twelve.
+function monthRangesUpTo(year, today) {
+  const ranges = [];
+  for (let m = 0; m < 12; m++) {
+    const start = new Date(Date.UTC(year, m, 1));
+    if (start > today) break; // skip months that haven't started yet
+    const end = new Date(Date.UTC(year, m + 1, 0)); // last day of the month
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    ranges.push({ since: fmt(start), until: fmt(end) });
+  }
+  return ranges;
+}
+
+async function fetchInsightsForRange(accessToken, accountId, fields, range) {
+  const params = new URLSearchParams({
+    access_token: accessToken,
+    level: "ad", // finest granularity — includes campaign_name/adset_name/ad_name per row
+    fields,
+    time_range: JSON.stringify(range),
+    time_increment: "1", // daily breakdown
+    limit: "500",
+  });
+  const url = `https://graph.facebook.com/${API_VERSION}/act_${accountId}/insights?${params.toString()}`;
+  return fetchAllPages(url);
+}
+
 async function fetchMetaAdsData() {
   const accessToken = process.env.META_ACCESS_TOKEN;
   const rawAccountId = process.env.META_AD_ACCOUNT_ID || "";
@@ -94,22 +138,11 @@ async function fetchMetaAdsData() {
     "cost_per_action_type",
   ].join(",");
 
-  const timeRange = JSON.stringify({
-    since: `${new Date().getFullYear()}-01-01`,
-    until: `${new Date().getFullYear()}-12-31`,
-  });
-
-  const params = new URLSearchParams({
-    access_token: accessToken,
-    level: "ad", // finest granularity — includes campaign_name/adset_name/ad_name per row
-    fields,
-    time_range: timeRange,
-    time_increment: "1", // daily breakdown
-    limit: "500",
-  });
-
-  const url = `https://graph.facebook.com/${API_VERSION}/act_${accountId}/insights?${params.toString()}`;
-  const rows = await fetchAllPages(url);
+  const ranges = monthRangesUpTo(new Date().getFullYear(), new Date());
+  const monthlyResults = await Promise.all(
+    ranges.map((r) => fetchInsightsForRange(accessToken, accountId, fields, r))
+  );
+  const rows = monthlyResults.flat();
 
   const dailyAdLevel = rows.map((r) => ({
     Date: r.date_start, // "YYYY-MM-DD"
@@ -124,6 +157,7 @@ async function fetchMetaAdsData() {
     UniqueClicks: num(r.unique_clicks),
     MessagingConversationsStarted: extractAction(r.actions, NAMED_ACTION_TYPES.messagingConversationsStarted),
     Leads: extractAction(r.actions, NAMED_ACTION_TYPES.leads),
+    RegistrationsCompleted: extractAction(r.actions, NAMED_ACTION_TYPES.registrationsCompleted),
     // Full raw array — use this to identify the correct action_type for
     // "registration completed" (or anything else not yet named above) from
     // a real response, then add it to NAMED_ACTION_TYPES.

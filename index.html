@@ -130,6 +130,7 @@
 
   /* ---------- Cohort heat table ---------- */
   .heat-cell{ font-weight:700; }
+  .cell-pct{ display:block; font-size:.72rem; color:var(--text-muted); font-weight:400; margin-top:.15rem; }
   .ghost-flag{ color:var(--danger); font-size:.7rem; font-weight:700; }
 
   /* ---------- Stat cards (Tab 4) ---------- */
@@ -175,9 +176,6 @@
           <input type="date" id="customStart"> <span style="color:var(--text-muted)">→</span> <input type="date" id="customEnd">
         </span>
       </div>
-    </div>
-    <div class="fb-group">
-      <label class="compare-check"><input type="checkbox" id="compareToggle"> Comparar con período anterior</label>
     </div>
     <div class="fb-group">
       <span class="fb-label">Vista</span>
@@ -299,7 +297,7 @@
     <div class="table-card">
       <div class="chart-title" style="margin-bottom:1.25rem;">Salud del Pipeline — Cohortes Mensuales</div>
       <table>
-        <thead><tr><th>Cohorte</th><th>Total</th><th>% Onboarding</th><th>% Onboarded</th><th>% Rechazado</th><th>% Buró</th><th>% Activo (Cliente)</th></tr></thead>
+        <thead><tr><th>Cohorte</th><th>Total</th><th>Onboarding</th><th>Onboarded</th><th>Rechazado</th><th>Buró</th><th>Activo (Cliente)</th></tr></thead>
         <tbody id="cohortTableBody"></tbody>
       </table>
       <div class="note">Solo cohortes 2026.</div>
@@ -477,7 +475,7 @@ let META_ADS_LIVE = false; // true once /api/meta-ads-data answers successfully
 let KEYWORD_STATUS = {}; // { keywordLowercase: 'Activa'|'Pausada' } — Sheet fallback only
 let chartMain = null;
 
-let filters = { preset:'all', customStart:null, customEnd:null, compare:false, granularity:'month' };
+let filters = { preset:'all', customStart:null, customEnd:null, granularity:'month' };
 let tab2Channel = 'all';
 
 /* =========================================================================
@@ -811,34 +809,39 @@ function renderAlerts(leads, range){
 /* =========================================================================
    TAB 1 — KPI CARDS
    ========================================================================= */
+function buildDeltaHtml(curr, prev, type){
+  if(prev === undefined || prev === null) return '';
+  const d = deltaPct(curr, prev);
+  if(d === null || !isFinite(d)) return '';
+  const net = curr - prev;
+  const cls = d>=0 ? 'up':'down';
+  const arrow = d>=0?'↑':'↓';
+  const sign = net>=0?'+':'−';
+  const netFmt = type==='currency' ? fmtMXN(Math.abs(net)) : fmtInt(Math.abs(net));
+  return `<div class="kpi-delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)}% (${sign}${netFmt}) vs. período anterior</div>`;
+}
 function renderKPICards(k, kPrev){
   const cards = [
-    {label:'Inversión Total', value:fmtMXN(k.inversion), color:'var(--info)', prev:kPrev && kPrev.inversion},
-    {label:'Registros CRM', value:fmtInt(k.registros), color:'var(--purple)', prev:kPrev && kPrev.registros},
-    {label:'CPL Promedio', value:fmtMXN(k.cpl), color:'var(--warning)', prev:kPrev && kPrev.cpl},
-    {label:'Clientes Finales', value:fmtInt(k.clientes), color:'var(--success)', prev:kPrev && kPrev.clientes},
-    {label:'Costo por Onboarded + Rechazados', value:fmtMXN(k.costoOnboardedRechazados), color:'var(--accent)', prev:kPrev && kPrev.costoOnboardedRechazados}
+    {label:'Inversión Total', value:fmtMXN(k.inversion), raw:k.inversion, type:'currency', color:'var(--info)', prev:kPrev && kPrev.inversion},
+    {label:'Registros CRM', value:fmtInt(k.registros), raw:k.registros, type:'int', color:'var(--purple)', prev:kPrev && kPrev.registros},
+    {label:'CPL Promedio', value:fmtMXN(k.cpl), raw:k.cpl, type:'currency', color:'var(--warning)', prev:kPrev && kPrev.cpl},
+    {label:'Clientes Finales', value:fmtInt(k.clientes), raw:k.clientes, type:'int', color:'var(--success)', prev:kPrev && kPrev.clientes},
+    {label:'Costo por Onboarded + Rechazados', value:fmtMXN(k.costoOnboardedRechazados), raw:k.costoOnboardedRechazados, type:'currency', color:'var(--accent)', prev:kPrev && kPrev.costoOnboardedRechazados}
   ];
   document.getElementById('kpiGridMain').innerHTML = cards.map(c => {
-    let deltaHtml = '';
-    if(filters.compare && c.prev !== undefined && c.prev !== null){
-      const rawVal = parseFloat((c.value+'').replace(/[^0-9.-]/g,''));
-      const d = deltaPct(rawVal, c.prev);
-      if(d !== null && isFinite(d)){
-        const cls = d>=0 ? 'up':'down';
-        deltaHtml = `<div class="kpi-delta ${cls}">${d>=0?'↑':'↓'} ${Math.abs(d).toFixed(1)}% vs. período anterior</div>`;
-      }
-    }
+    const deltaHtml = buildDeltaHtml(c.raw, c.prev, c.type);
     return `<div class="kpi-card" style="--card-color:${c.color}"><div class="kpi-label">${c.label}</div><div class="kpi-value">${c.value}</div>${deltaHtml}</div>`;
   }).join('');
 
   const smallCards = [
-    {label:'Costo por Paramétrico Aprobado', value:fmtMXN(k.costoParametrico), sub:`${fmtInt(k.parametricoSI)} usuarios`},
-    {label:'Costo por Buró Aprobado', value:fmtMXN(k.costoBuro), sub:`${fmtInt(k.buroSI)} usuarios`},
-    {label:'CAC por Arrendamiento', value:fmtMXN(k.cacArrendamiento), sub:`${fmtInt(k.clientes)} usuarios`}
+    {label:'Costo por Paramétrico Aprobado', value:fmtMXN(k.costoParametrico), raw:k.costoParametrico, type:'currency', prev:kPrev && kPrev.costoParametrico, sub:`${fmtInt(k.parametricoSI)} usuarios`},
+    {label:'Costo por Buró Aprobado', value:fmtMXN(k.costoBuro), raw:k.costoBuro, type:'currency', prev:kPrev && kPrev.costoBuro, sub:`${fmtInt(k.buroSI)} usuarios`},
+    {label:'CAC por Arrendamiento', value:fmtMXN(k.cacArrendamiento), raw:k.cacArrendamiento, type:'currency', prev:kPrev && kPrev.cacArrendamiento, sub:`${fmtInt(k.clientes)} usuarios`}
   ];
-  document.getElementById('kpiGridSmall').innerHTML = smallCards.map(c => `
-    <div class="kpi-card" style="--card-color:var(--secondary)"><div class="kpi-label">${c.label}</div><div class="kpi-value">${c.value}</div><div class="kpi-sub">${c.sub}</div></div>`).join('');
+  document.getElementById('kpiGridSmall').innerHTML = smallCards.map(c => {
+    const deltaHtml = buildDeltaHtml(c.raw, c.prev, c.type);
+    return `<div class="kpi-card" style="--card-color:var(--secondary)"><div class="kpi-label">${c.label}</div><div class="kpi-value">${c.value}</div><div class="kpi-sub">${c.sub}</div>${deltaHtml}</div>`;
+  }).join('');
 }
 
 /* =========================================================================
@@ -1125,13 +1128,13 @@ function renderCohortTable(){
   const keys = Object.keys(cohorts).sort();
   document.getElementById('cohortTableBody').innerHTML = keys.map(k => {
     const c = cohorts[k];
-    const pctOnboarding = c.total ? (c.onboarding/c.total*100) : 0;
+    const cell = (count) => `${fmtInt(count)}<span class="cell-pct">${fmtPct(c.total?count/c.total*100:0)}</span>`;
     return `<tr><td>${monthLabel(k)}</td><td>${fmtInt(c.total)}</td>
-      <td>${fmtPct(pctOnboarding)}</td>
-      <td>${fmtPct(c.total?c.onboarded/c.total*100:0)}</td>
-      <td>${fmtPct(c.total?c.rechazado/c.total*100:0)}</td>
-      <td>${fmtPct(c.total?c.buro/c.total*100:0)}</td>
-      <td>${fmtPct(c.total?c.activo/c.total*100:0)}</td></tr>`;
+      <td>${cell(c.onboarding)}</td>
+      <td>${cell(c.onboarded)}</td>
+      <td>${cell(c.rechazado)}</td>
+      <td>${cell(c.buro)}</td>
+      <td>${cell(c.activo)}</td></tr>`;
   }).join('');
 }
 
@@ -1197,11 +1200,10 @@ function renderAll(){
   const googleRows = filterByRange(ALL_GOOGLE, range);
   const k = computeKPIs(leads, metaRows, googleRows);
 
-  let kPrev = null;
-  if(filters.compare){
-    const prevRange = previousRange(range);
-    kPrev = computeKPIs(filterByRange(ALL_LEADS, prevRange), filterByRange(ALL_META, prevRange), filterByRange(ALL_GOOGLE, prevRange));
-  }
+  // Comparación vs. período anterior siempre activa en las fichas de KPIs —
+  // ya no depende de un checkbox.
+  const prevRange = previousRange(range);
+  const kPrev = computeKPIs(filterByRange(ALL_LEADS, prevRange), filterByRange(ALL_META, prevRange), filterByRange(ALL_GOOGLE, prevRange));
 
   // Tab 1
   renderAlerts(leads, range);
@@ -1265,7 +1267,6 @@ document.querySelectorAll('.preset-btn').forEach(btn => {
 });
 document.getElementById('customStart').addEventListener('change', e => { filters.customStart = e.target.value; updatePeriodToggleLabel(); if(filters.preset==='custom') renderAll(); });
 document.getElementById('customEnd').addEventListener('change', e => { filters.customEnd = e.target.value; updatePeriodToggleLabel(); if(filters.preset==='custom') renderAll(); });
-document.getElementById('compareToggle').addEventListener('change', e => { filters.compare = e.target.checked; renderAll(); });
 document.querySelectorAll('#granularityToggle button').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('#granularityToggle button').forEach(b=>b.classList.remove('active'));

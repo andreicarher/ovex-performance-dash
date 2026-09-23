@@ -131,6 +131,8 @@
   /* ---------- Cohort heat table ---------- */
   .heat-cell{ font-weight:700; }
   .cell-pct{ display:block; font-size:.72rem; color:var(--text-muted); font-weight:400; margin-top:.15rem; }
+  .cell-pct.up{ color:var(--success); }
+  .cell-pct.down{ color:var(--danger); }
   .ghost-flag{ color:var(--danger); font-size:.7rem; font-weight:700; }
 
   /* ---------- Stat cards (Tab 4) ---------- */
@@ -893,7 +895,16 @@ function renderMainChart(leads, metaRows, googleRows){
 /* =========================================================================
    TAB 1 — CHANNEL TABLE
    ========================================================================= */
-function renderChannelTable(leads, metaRows, googleRows){
+function channelDelta(curr, prev){
+  if(prev === undefined || prev === null || !prev) return '';
+  const d = deltaPct(curr, prev);
+  if(d === null || !isFinite(d)) return '';
+  const cls = d>=0 ? 'up':'down';
+  const arrow = d>=0?'↑':'↓';
+  return `<span class="cell-pct ${cls}">${arrow} ${Math.abs(d).toFixed(1)}%</span>`;
+}
+
+function channelStats(leads, metaRows, googleRows){
   const inversionMeta = metaRows.reduce((s,r)=>s+r.cost,0);
   const inversionGoogle = googleRows.reduce((s,r)=>s+r.cost,0);
   const groups = { 'Meta Ads':[], 'Google Ads':[], 'Sin Fuente':[] };
@@ -904,23 +915,56 @@ function renderChannelTable(leads, metaRows, googleRows){
     { canal:'Sin Fuente', inv:0, leadsArr:groups['Sin Fuente'] }
   ];
   let totalInv=0, totalReg=0, totalEval=0, totalRech=0;
-  const bodyRows = rows.map(r => {
+  const perCanal = {};
+  rows.forEach(r => {
     const reg = r.leadsArr.length;
     const evalCount = r.leadsArr.filter(isEvaluado).length;
     const rechCount = r.leadsArr.filter(l=>l.estatus==='Rechazado').length;
     const cpl = reg ? r.inv/reg : null;
-    const convPct = reg ? (evalCount/reg*100) : 0;
-    const rechPct = evalCount ? (rechCount/evalCount*100) : 0;
     const costoEval = evalCount ? r.inv/evalCount : null;
     totalInv+=r.inv; totalReg+=reg; totalEval+=evalCount; totalRech+=rechCount;
-    return `<tr><td>${r.canal}</td><td>${fmtMXN(r.inv)}</td><td>${fmtInt(reg)}</td><td>${cpl!==null?fmtMXN(cpl):'—'}</td><td>${fmtInt(evalCount)}</td><td>${fmtPct(convPct)}</td><td>${fmtPct(rechPct)}</td><td>${costoEval!==null?fmtMXN(costoEval):'—'}</td></tr>`;
-  }).join('');
+    perCanal[r.canal] = { inv:r.inv, reg, evalCount, rechCount, cpl, costoEval };
+  });
   const totalCpl = totalReg ? totalInv/totalReg : null;
-  const totalConv = totalReg ? (totalEval/totalReg*100) : 0;
-  const totalRechPct = totalEval ? (totalRech/totalEval*100) : 0;
   const totalCostoEval = totalEval ? totalInv/totalEval : null;
-  document.getElementById('channelTableBody').innerHTML = bodyRows + `
-    <tr class="total-row"><td>Total</td><td>${fmtMXN(totalInv)}</td><td>${fmtInt(totalReg)}</td><td>${totalCpl!==null?fmtMXN(totalCpl):'—'}</td><td>${fmtInt(totalEval)}</td><td>${fmtPct(totalConv)}</td><td>${fmtPct(totalRechPct)}</td><td>${totalCostoEval!==null?fmtMXN(totalCostoEval):'—'}</td></tr>`;
+  perCanal['Total'] = { inv:totalInv, reg:totalReg, evalCount:totalEval, rechCount:totalRech, cpl:totalCpl, costoEval:totalCostoEval };
+  return perCanal;
+}
+
+function renderChannelTable(leads, metaRows, googleRows, leadsPrev, metaRowsPrev, googleRowsPrev){
+  const curr = channelStats(leads, metaRows, googleRows);
+  const prev = channelStats(leadsPrev, metaRowsPrev, googleRowsPrev);
+
+  const rowsHtml = ['Meta Ads','Google Ads','Sin Fuente'].map(canal => {
+    const c = curr[canal], p = prev[canal];
+    const convPct = c.reg ? (c.evalCount/c.reg*100) : 0;
+    const rechPct = c.evalCount ? (c.rechCount/c.evalCount*100) : 0;
+    return `<tr>
+      <td>${canal}</td>
+      <td>${fmtMXN(c.inv)}${channelDelta(c.inv, p.inv)}</td>
+      <td>${fmtInt(c.reg)}${channelDelta(c.reg, p.reg)}</td>
+      <td>${c.cpl!==null?fmtMXN(c.cpl):'—'}${channelDelta(c.cpl, p.cpl)}</td>
+      <td>${fmtInt(c.evalCount)}${channelDelta(c.evalCount, p.evalCount)}</td>
+      <td>${fmtPct(convPct)}</td>
+      <td>${fmtPct(rechPct)}</td>
+      <td>${c.costoEval!==null?fmtMXN(c.costoEval):'—'}${channelDelta(c.costoEval, p.costoEval)}</td>
+    </tr>`;
+  }).join('');
+
+  const ct = curr['Total'], pt = prev['Total'];
+  const totalConv = ct.reg ? (ct.evalCount/ct.reg*100) : 0;
+  const totalRechPct = ct.evalCount ? (ct.rechCount/ct.evalCount*100) : 0;
+  document.getElementById('channelTableBody').innerHTML = rowsHtml + `
+    <tr class="total-row">
+      <td>Total</td>
+      <td>${fmtMXN(ct.inv)}${channelDelta(ct.inv, pt.inv)}</td>
+      <td>${fmtInt(ct.reg)}${channelDelta(ct.reg, pt.reg)}</td>
+      <td>${ct.cpl!==null?fmtMXN(ct.cpl):'—'}${channelDelta(ct.cpl, pt.cpl)}</td>
+      <td>${fmtInt(ct.evalCount)}${channelDelta(ct.evalCount, pt.evalCount)}</td>
+      <td>${fmtPct(totalConv)}</td>
+      <td>${fmtPct(totalRechPct)}</td>
+      <td>${ct.costoEval!==null?fmtMXN(ct.costoEval):'—'}${channelDelta(ct.costoEval, pt.costoEval)}</td>
+    </tr>`;
 }
 
 /* =========================================================================
@@ -1203,13 +1247,16 @@ function renderAll(){
   // Comparación vs. período anterior siempre activa en las fichas de KPIs —
   // ya no depende de un checkbox.
   const prevRange = previousRange(range);
-  const kPrev = computeKPIs(filterByRange(ALL_LEADS, prevRange), filterByRange(ALL_META, prevRange), filterByRange(ALL_GOOGLE, prevRange));
+  const leadsPrev = filterByRange(ALL_LEADS, prevRange);
+  const metaRowsPrev = filterByRange(ALL_META, prevRange);
+  const googleRowsPrev = filterByRange(ALL_GOOGLE, prevRange);
+  const kPrev = computeKPIs(leadsPrev, metaRowsPrev, googleRowsPrev);
 
   // Tab 1
   renderAlerts(leads, range);
   renderKPICards(k, kPrev);
   renderMainChart(leads, metaRows, googleRows);
-  renderChannelTable(leads, metaRows, googleRows);
+  renderChannelTable(leads, metaRows, googleRows, leadsPrev, metaRowsPrev, googleRowsPrev);
 
   // Tab 2
   renderCampaignTable(range, tab2Channel);

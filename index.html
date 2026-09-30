@@ -249,17 +249,17 @@
       <div class="chart-title" style="margin-bottom:1.25rem;">Tabla de Rendimiento por Campaña (Costo por Etapa)</div>
       <table>
         <thead>
-          <tr><th>Campaña</th><th>Inversión</th><th>Registros</th><th>CPL</th><th>NIP SI</th><th>Costo/NIP</th><th>Buró Aprobado</th><th>Costo/Buró</th><th>Paramétrico Aprobado</th><th>Arrendamiento</th><th>Costo/Arrendamiento</th></tr>
+          <tr><th>Campaña</th><th>Inversión</th><th>Registros</th><th>CPL</th><th>NIP SI</th><th>Costo/NIP</th><th>Buró Aprobado</th><th>Costo/Buró</th><th>Paramétrico Aprobado</th></tr>
         </thead>
         <tbody id="campaignTableBody"></tbody>
       </table>
-      <div class="note">"Arrendamiento" = Clientes finales (con arrendamiento = SI). Costo por etapa = Inversión total de la campaña ÷ leads que llegaron a esa etapa (acumulado, no incremental).</div>
+      <div class="note">Costo por etapa = Inversión total de la campaña ÷ leads que llegaron a esa etapa (acumulado, no incremental). No se muestra Arrendamiento/Clientes aquí — hoy ningún lead atribuido a UTM ha llegado a esa etapa; ese dato sí vive en la Tabla Consolidada por Canal y en Cohortes.</div>
     </div>
 
     <div class="table-card" id="keywordSection">
       <div class="chart-title" style="margin-bottom:1.25rem;">Desglose Google Ads — Keywords</div>
       <table>
-        <thead><tr><th>Tema</th><th>Keyword</th><th>Estado</th><th>Inversión</th><th>Registros</th><th>% Onboarded</th><th>Onboarded</th><th>Rechazadas</th><th>% Rechazados</th><th>Buró Aprobado</th><th>Paramétrico Aprobado</th><th>Con Arrendamiento</th><th>Costo/Onboarded</th></tr></thead>
+        <thead><tr><th>Tema</th><th>Keyword</th><th>Estado</th><th>Inversión</th><th>Registros</th><th>% Onboarded</th><th>Onboarded</th><th>Rechazadas</th><th>% Rechazados</th><th>Buró Aprobado</th><th>Paramétrico Aprobado</th><th>Costo/Onboarded</th></tr></thead>
         <tbody id="keywordTableBody"></tbody>
       </table>
       <div class="note" id="keywordNote">Google Ads no reporta gasto desglosado por keyword en el Sheet actual, así que no se muestra costo por término — solo volumen, calidad y estado (Activa/Pausada). "% Onboarded" y "% Rechazados" se calculan sobre el total de registros de esa keyword.</div>
@@ -268,7 +268,7 @@
     <div class="table-card">
       <div class="chart-title" style="margin-bottom:1.25rem;">Ranking de Creativos / Anuncios (Meta)</div>
       <table>
-        <thead><tr><th>Anuncio</th><th>Campaña</th><th>Objetivo</th><th>Etapa Funnel</th><th>Inversión</th><th>Registros</th><th>CPL</th><th>NIP SI</th><th>Costo/NIP</th><th>Buró Aprobado</th><th>Costo/Buró</th><th>Paramétrico Aprobado</th><th>Rechazados</th><th>Arrendamiento</th><th>Costo/Arrendamiento</th><th>% Evaluados</th></tr></thead>
+        <thead><tr><th>Anuncio</th><th>Campaña</th><th>Objetivo</th><th>Etapa Funnel</th><th>Inversión</th><th>Registros</th><th>CPL</th><th>NIP SI</th><th>Costo/NIP</th><th>Buró Aprobado</th><th>Costo/Buró</th><th>Paramétrico Aprobado</th><th>Rechazados</th><th>% Evaluados</th></tr></thead>
         <tbody id="adRankingBody"></tbody>
       </table>
       <div class="note">Ordenado por % de registros que llegan a evaluación (Onboarded+Rechazado), no por volumen. Solo se muestran anuncios con al menos 1 registro.</div>
@@ -900,8 +900,11 @@ function renderMainChart(leads, metaRows, googleRows){
 // If the row has 0 clientes (arrendamiento=SI), the metric is hidden ('—')
 // instead of showing a 0 — a row with zero conversions this deep in the funnel
 // is treated as "not enough signal yet" rather than a meaningful zero.
-function funnelMetricCell(count, total, clientesCount){
-  if(!clientesCount) return '—';
+// Buró/Paramétrico siempre se muestran con su % del total — sin condicionarlos
+// a que existan clientes (arrendamiento), ya que hoy prácticamente ningún lead
+// atribuido a UTM ha llegado a esa etapa todavía y ocultarlos escondería datos
+// reales de Buró/Paramétrico que sí existen más arriba en el funnel.
+function metricWithPct(count, total){
   const pct = total ? (count/total*100) : 0;
   return `${fmtInt(count)}<span class="cell-pct">${fmtPct(pct)}</span>`;
 }
@@ -963,8 +966,8 @@ function renderChannelTable(leads, metaRows, googleRows, leadsPrev, metaRowsPrev
       <td>${fmtPct(convPct)}</td>
       <td>${fmtPct(rechPct)}</td>
       <td>${c.costoEval!==null?fmtMXN(c.costoEval):'—'}${channelDelta(c.costoEval, p.costoEval)}</td>
-      <td>${funnelMetricCell(c.buroCount, c.reg, c.clientesCount)}</td>
-      <td>${funnelMetricCell(c.paramCount, c.reg, c.clientesCount)}</td>
+      <td>${metricWithPct(c.buroCount, c.reg)}</td>
+      <td>${metricWithPct(c.paramCount, c.reg)}</td>
     </tr>`;
   }).join('');
 
@@ -981,8 +984,8 @@ function renderChannelTable(leads, metaRows, googleRows, leadsPrev, metaRowsPrev
       <td>${fmtPct(totalConv)}</td>
       <td>${fmtPct(totalRechPct)}</td>
       <td>${ct.costoEval!==null?fmtMXN(ct.costoEval):'—'}${channelDelta(ct.costoEval, pt.costoEval)}</td>
-      <td>${funnelMetricCell(ct.buroCount, ct.reg, ct.clientesCount)}</td>
-      <td>${funnelMetricCell(ct.paramCount, ct.reg, ct.clientesCount)}</td>
+      <td>${metricWithPct(ct.buroCount, ct.reg)}</td>
+      <td>${metricWithPct(ct.paramCount, ct.reg)}</td>
     </tr>`;
 }
 
@@ -1020,8 +1023,8 @@ function renderCampaignTable(range, channel){
     const costoNip = c.nip ? c.inv/c.nip : null;
     const costoBuro = c.buro ? c.inv/c.buro : null;
     const costoOnb = c.clientes ? c.inv/c.clientes : null;
-    return `<tr><td>${k}</td><td>${fmtMXN(c.inv)}</td><td>${fmtInt(c.registros)}</td><td>${cpl!==null?fmtMXN(cpl):'—'}</td><td>${fmtInt(c.nip)}</td><td>${costoNip!==null?fmtMXN(costoNip):'—'}</td><td>${funnelMetricCell(c.buro, c.registros, c.clientes)}</td><td>${costoBuro!==null?fmtMXN(costoBuro):'—'}</td><td>${funnelMetricCell(c.parametrico, c.registros, c.clientes)}</td><td>${fmtInt(c.clientes)}</td><td>${costoOnb!==null?fmtMXN(costoOnb):'—'}</td></tr>`;
-  }).join('') || `<tr><td colspan="11" style="color:var(--text-muted)">Sin datos para este canal en el período seleccionado.</td></tr>`;
+    return `<tr><td>${k}</td><td>${fmtMXN(c.inv)}</td><td>${fmtInt(c.registros)}</td><td>${cpl!==null?fmtMXN(cpl):'—'}</td><td>${fmtInt(c.nip)}</td><td>${costoNip!==null?fmtMXN(costoNip):'—'}</td><td>${metricWithPct(c.buro, c.registros)}</td><td>${costoBuro!==null?fmtMXN(costoBuro):'—'}</td><td>${metricWithPct(c.parametrico, c.registros)}</td></tr>`;
+  }).join('') || `<tr><td colspan="9" style="color:var(--text-muted)">Sin datos para este canal en el período seleccionado.</td></tr>`;
 }
 
 /* =========================================================================
@@ -1069,8 +1072,8 @@ function renderKeywordTable(range){
     const pctOnboarded = d.registros ? (d.onboarded/d.registros*100) : 0;
     const pctRechazados = d.registros ? (d.rechazados/d.registros*100) : 0;
     const costoOnboarded = d.onboarded ? d.cost/d.onboarded : null;
-    return `<tr><td>${classifyTema(k)}</td><td>${k}</td><td>${status!=='—'?`<span class="badge ${badgeClass}">${status}</span>`:'—'}</td><td>${d.cost?fmtMXN(d.cost):'—'}</td><td>${fmtInt(d.registros)}</td><td>${fmtPct(pctOnboarded)}</td><td>${fmtInt(d.onboarded)}</td><td>${fmtInt(d.rechazados)}</td><td>${fmtPct(pctRechazados)}</td><td>${funnelMetricCell(d.buro, d.registros, d.clientes)}</td><td>${funnelMetricCell(d.parametrico, d.registros, d.clientes)}</td><td>${fmtInt(d.clientes)}</td><td>${costoOnboarded!==null?fmtMXN(costoOnboarded):'—'}</td></tr>`;
-  }).join('') || `<tr><td colspan="13" style="color:var(--text-muted)">Sin registros de Google Ads en el período seleccionado.</td></tr>`;
+    return `<tr><td>${classifyTema(k)}</td><td>${k}</td><td>${status!=='—'?`<span class="badge ${badgeClass}">${status}</span>`:'—'}</td><td>${d.cost?fmtMXN(d.cost):'—'}</td><td>${fmtInt(d.registros)}</td><td>${fmtPct(pctOnboarded)}</td><td>${fmtInt(d.onboarded)}</td><td>${fmtInt(d.rechazados)}</td><td>${fmtPct(pctRechazados)}</td><td>${metricWithPct(d.buro, d.registros)}</td><td>${metricWithPct(d.parametrico, d.registros)}</td><td>${costoOnboarded!==null?fmtMXN(costoOnboarded):'—'}</td></tr>`;
+  }).join('') || `<tr><td colspan="12" style="color:var(--text-muted)">Sin registros de Google Ads en el período seleccionado.</td></tr>`;
 }
 
 /* =========================================================================
@@ -1113,8 +1116,8 @@ function renderAdRanking(range, channel){
     const costoNip = a.nip ? a.inv/a.nip : null;
     const costoBuro = a.buro ? a.inv/a.buro : null;
     const costoCliente = a.clientes ? a.inv/a.clientes : null;
-    return `<tr><td>${a.adName}</td><td>${a.campaignName}</td><td>${a.objetivo||'—'}</td><td>${a.etapa||'—'}</td><td>${fmtMXN(a.inv)}</td><td>${fmtInt(a.registros)}</td><td>${cpl!==null?fmtMXN(cpl):'—'}</td><td>${fmtInt(a.nip)}</td><td>${costoNip!==null?fmtMXN(costoNip):'—'}</td><td>${funnelMetricCell(a.buro, a.registros, a.clientes)}</td><td>${costoBuro!==null?fmtMXN(costoBuro):'—'}</td><td>${funnelMetricCell(a.parametrico, a.registros, a.clientes)}</td><td>${fmtInt(a.rechazados)}</td><td>${fmtInt(a.clientes)}</td><td>${costoCliente!==null?fmtMXN(costoCliente):'—'}</td><td>${fmtPct(pct)}</td></tr>`;
-  }).join('') || `<tr><td colspan="17" style="color:var(--text-muted)">Sin anuncios con registros en el período seleccionado.</td></tr>`;
+    return `<tr><td>${a.adName}</td><td>${a.campaignName}</td><td>${a.objetivo||'—'}</td><td>${a.etapa||'—'}</td><td>${fmtMXN(a.inv)}</td><td>${fmtInt(a.registros)}</td><td>${cpl!==null?fmtMXN(cpl):'—'}</td><td>${fmtInt(a.nip)}</td><td>${costoNip!==null?fmtMXN(costoNip):'—'}</td><td>${metricWithPct(a.buro, a.registros)}</td><td>${costoBuro!==null?fmtMXN(costoBuro):'—'}</td><td>${metricWithPct(a.parametrico, a.registros)}</td><td>${fmtInt(a.rechazados)}</td><td>${fmtPct(pct)}</td></tr>`;
+  }).join('') || `<tr><td colspan="15" style="color:var(--text-muted)">Sin anuncios con registros en el período seleccionado.</td></tr>`;
 }
 
 /* =========================================================================
@@ -1201,8 +1204,8 @@ function renderCohortTable(){
       <td>${cell(c.onboarding)}</td>
       <td>${cell(c.onboarded)}</td>
       <td>${cell(c.rechazado)}</td>
-      <td>${funnelMetricCell(c.buro, c.total, c.activo)}</td>
-      <td>${funnelMetricCell(c.parametrico, c.total, c.activo)}</td>
+      <td>${metricWithPct(c.buro, c.total)}</td>
+      <td>${metricWithPct(c.parametrico, c.total)}</td>
       <td>${cell(c.activo)}</td></tr>`;
   }).join('');
 }

@@ -1,0 +1,26 @@
+<!-- (a) En TAB 3, dentro del chart-card del embudo, justo debajo del título "Embudo de Conversión (Costo por Etapa)": -->
+      <div class="funnel-hint">Haz clic en una etapa para ver los registros que la componen.</div>
+
+<!-- (b) Justo antes de </body> (después de </div><!-- /dashboardBody -->): -->
+<div class="drill-backdrop" id="drillBackdrop" hidden>
+  <div class="drill-panel" role="dialog" aria-modal="true" aria-labelledby="drillTitle">
+    <div class="drill-head">
+      <div>
+        <div class="drill-title" id="drillTitle"></div>
+        <div class="drill-sub" id="drillSub"></div>
+      </div>
+      <div class="drill-actions">
+        <input type="search" id="drillSearch" placeholder="Buscar por nombre, ID, correo o campaña" aria-label="Buscar en el desglose">
+        <button class="preset-btn" id="drillCsv" type="button">Descargar CSV</button>
+        <button class="drill-close" id="drillClose" type="button" aria-label="Cerrar desglose">✕</button>
+      </div>
+    </div>
+    <div class="drill-body">
+      <table>
+        <thead><tr><th>Fecha registro</th><th>ID usuario</th><th>Nombre</th><th>Email</th><th>Teléfono</th><th>Canal</th><th>Campaña</th><th>Anuncio / Keyword</th><th>Estatus</th><th>NIP</th><th>Buró</th><th>Paramétrico</th><th>Arrendamiento</th></tr></thead>
+        <tbody id="drillBody"></tbody>
+      </table>
+    </div>
+    <div class="drill-foot note" id="drillNote"></div>
+  </div>
+</div>

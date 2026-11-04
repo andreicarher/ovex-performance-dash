@@ -4,167 +4,178 @@
 // Google Ads credentials. Never move this logic into the dashboard's client-side
 // JS: anything shipped to the browser is public.
 //
-// Implementation notes: this calls the Google Ads REST API directly (no SDK),
-// on purpose — it bakes in the lessons learned connecting Google Ads on a
-// previous project, so the failure modes are the ones already known instead
-// of new ones hidden behind a library:
-//   - OAuth Client ID must be type "Aplicación web" (see SETUP.md) — a
-//     "desktop" client cannot register the OAuth Playground's redirect URI.
-//   - API version is env-configurable, not hardcoded — Google deprecates
-//     Google Ads API versions aggressively (roughly every ~3 quarters).
-//   - Never send pageSize — the API fixes it at 10,000 rows and rejects the
-//     param with PAGE_SIZE_NOT_SUPPORTED if you set it.
-//   - Response fields are camelCase (costMicros, advertisingChannelType)
-//     even though the GAQL query itself is written in snake_case.
-//   - Numeric fields (cost_micros, clicks, impressions) come back as STRINGS
-//     in the REST response — always parseInt/parseFloat them.
-//   - The top-level error.message is usually generic ("Request contains an
-//     invalid argument."); the actionable detail is nested in
-//     error.details[].errors[].message — always surface that, not just the
-//     top-level message, or every failure turns into a guessing game.
+// Calls the Google Ads REST API directly (no SDK). Known gotchas baked in:
+//   - OAuth Client ID must be type "Aplicación web" (see SETUP.md).
+//   - API version is env-configurable — Google deprecates versions ~every 3 quarters.
+//   - Never send pageSize (PAGE_SIZE_NOT_SUPPORTED); paginate via nextPageToken.
+//   - Response fields are camelCase even though GAQL is snake_case.
+//   - Numeric fields come back as STRINGS — always parse them.
+//   - Actionable error detail lives in error.details[].errors[].message.
+//   - GAQL has no THIS_YEAR literal — ranges are spelled out with BETWEEN.
+//
+// ---------------------------------------------------------------------------
+// Query params (all optional):
+//   ?since=YYYY-MM-DD&until=YYYY-MM-DD   custom range (default: DATA_START_DATE → today)
+//   ?refresh=<REFRESH_SECRET>            bypass the cache (only if REFRESH_SECRET is set)
+//
+// Environment variables:
+//   GOOGLE_ADS_CLIENT_ID, GOOGLE_ADS_CLIENT_SECRET, GOOGLE_ADS_REFRESH_TOKEN,
+//   GOOGLE_ADS_DEVELOPER_TOKEN, GOOGLE_ADS_CUSTOMER_ID       (required)
+//   GOOGLE_ADS_LOGIN_CUSTOMER_ID   only if accessed through an MCC
+//   GOOGLE_ADS_API_VERSION         default v23
+//   DATA_START_DATE                default 2026-01-01
+//   REPORT_TIMEZONE                default America/Mexico_City
+//   ALLOWED_ORIGIN, REFRESH_SECRET optional (see meta-ads-data.js)
+// ---------------------------------------------------------------------------
 
 const API_VERSION = process.env.GOOGLE_ADS_API_VERSION || "v23";
+const DATA_START_DATE = process.env.DATA_START_DATE || "2026-01-01";
+const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || "America/Mexico_City";
+const MAX_RANGE_DAYS = 3 * 366;
 
-// GAQL's DURING operator only accepts a fixed set of literals (LAST_30_DAYS,
-// THIS_MONTH, YESTERDAY, etc.) — there is no THIS_YEAR/LAST_YEAR literal.
-// A full-year range has to be spelled out explicitly with BETWEEN.
-function currentYearRange() {
-  const year = new Date().getFullYear();
-  return { start: `${year}-01-01`, end: `${year}-12-31` };
+export const config = { maxDuration: 60 };
+
+// ---------------------------------------------------------------------------
+// Date range helpers (kept identical to meta-ads-data.js on purpose — each
+// function is self-contained so neither depends on shared-module resolution)
+// ---------------------------------------------------------------------------
+const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+function todayInTimezone(tz) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+}
+function isValidIsoDate(s) {
+  if (!ISO_RE.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+const isoToUtc = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(Date.UTC(y, m - 1, d)); };
+function httpError(status, message) { const e = new Error(message); e.status = status; return e; }
+
+// Default DATA_START_DATE → today. Replaces the old "current year only" range,
+// which would have silently dropped all of 2026 on January 1st, 2027.
+function resolveRange(query) {
+  const today = todayInTimezone(REPORT_TIMEZONE);
+  const since = query?.since ?? DATA_START_DATE;
+  let until = query?.until ?? today;
+  if (!isValidIsoDate(since) || !isValidIsoDate(until)) {
+    throw httpError(400, "Parámetros since/until inválidos — usa el formato YYYY-MM-DD.");
+  }
+  if (until > today) until = today;
+  if (since > until) throw httpError(400, `Rango vacío: since (${since}) es posterior a until (${until}).`);
+  const days = Math.round((isoToUtc(until) - isoToUtc(since)) / 86400000) + 1;
+  if (days > MAX_RANGE_DAYS) throw httpError(400, `Rango demasiado largo (${days} días, máximo ${MAX_RANGE_DAYS}).`);
+  return { since, until };
 }
 
 // ---------------------------------------------------------------------------
-// Caching. Two layers:
-//  1. Access token cache (OAuth tokens last ~1h — no need to refresh every call).
-//  2. Report data cache (15 min TTL) so dashboard traffic doesn't hammer the
-//     Ads API or its quota.
-// Both are in-memory and only persist while the serverless instance stays
-// "warm" — Vercel does not guarantee the same instance handles the next
-// request, so this reduces calls but is not a durable cache. If you need
-// guaranteed hourly-fresh data regardless of cold starts, the next step is
-// Vercel KV + a Cron Job writing into it on a schedule (see SETUP.md, step 6).
+// OAuth + GAQL
 // ---------------------------------------------------------------------------
 let tokenCache = { accessToken: null, expiresAt: 0 };
-let dataCache = { data: null, fetchedAt: 0 };
-const DATA_CACHE_TTL_MS = 15 * 60 * 1000;
+let tokenInFlight = null; // the two parallel queries share one token refresh
 
 const STATUS_MAP = { ENABLED: "Activa", PAUSED: "Pausada", REMOVED: "Removida" };
-const microsToCurrency = (v) => (v === undefined || v === null ? 0 : parseFloat(v) / 1_000_000);
 const num = (v) => (v === undefined || v === null ? 0 : parseFloat(v));
+const microsToCurrency = (v) => Math.round((num(v) / 1_000_000) * 100) / 100;
 
 async function getAccessToken() {
   const now = Date.now();
-  // 60s safety margin before actual expiry
-  if (tokenCache.accessToken && now < tokenCache.expiresAt - 60_000) {
+  if (tokenCache.accessToken && now < tokenCache.expiresAt - 60_000) return tokenCache.accessToken;
+  if (tokenInFlight) return tokenInFlight;
+  tokenInFlight = (async () => {
+    const res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: process.env.GOOGLE_ADS_CLIENT_ID,
+        client_secret: process.env.GOOGLE_ADS_CLIENT_SECRET,
+        refresh_token: process.env.GOOGLE_ADS_REFRESH_TOKEN,
+        grant_type: "refresh_token",
+      }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      throw new Error(`Fallo al refrescar el access token OAuth: ${json.error_description || json.error || JSON.stringify(json)}`);
+    }
+    tokenCache = { accessToken: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 };
     return tokenCache.accessToken;
-  }
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: process.env.GOOGLE_ADS_CLIENT_ID,
-      client_secret: process.env.GOOGLE_ADS_CLIENT_SECRET,
-      refresh_token: process.env.GOOGLE_ADS_REFRESH_TOKEN,
-      grant_type: "refresh_token",
-    }),
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(
-      `Fallo al refrescar el access token OAuth: ${json.error_description || json.error || JSON.stringify(json)}`
-    );
-  }
-  tokenCache = { accessToken: json.access_token, expiresAt: now + json.expires_in * 1000 };
-  return tokenCache.accessToken;
+  })();
+  try { return await tokenInFlight; } finally { tokenInFlight = null; }
 }
 
-// Pulls the real, actionable error out of a Google Ads API error response.
-// The top-level message is almost always useless on its own — see notes above.
 function extractGoogleAdsErrorDetail(json) {
   const topMessage = json?.error?.message || "Error desconocido de Google Ads API";
   const nestedErrors = (json?.error?.details || []).flatMap((d) => d.errors || []);
-  const nestedMessages = nestedErrors.map(
-    (e) => `${e.errorCode ? JSON.stringify(e.errorCode) + ": " : ""}${e.message}`
-  );
+  const nestedMessages = nestedErrors.map((e) => `${e.errorCode ? JSON.stringify(e.errorCode) + ": " : ""}${e.message}`);
   return nestedMessages.length ? `${topMessage} — ${nestedMessages.join(" | ")}` : topMessage;
 }
 
 async function gaqlSearch(query) {
   const accessToken = await getAccessToken();
-  const customerId = process.env.GOOGLE_ADS_CUSTOMER_ID;
+  const customerId = (process.env.GOOGLE_ADS_CUSTOMER_ID || "").replace(/-/g, "");
   const url = `https://googleads.googleapis.com/${API_VERSION}/customers/${customerId}/googleAds:search`;
-
   const headers = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${accessToken}`,
     "developer-token": process.env.GOOGLE_ADS_DEVELOPER_TOKEN,
   };
   if (process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID) {
-    headers["login-customer-id"] = process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID;
+    headers["login-customer-id"] = process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID.replace(/-/g, "");
   }
-
   let allRows = [];
   let pageToken;
   do {
-    // Deliberately no `pageSize` field here — see file header notes.
-    const body = pageToken ? { query, pageToken } : { query };
+    const body = pageToken ? { query, pageToken } : { query }; // no pageSize, ever
     const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
     const json = await res.json();
     if (!res.ok) throw new Error(extractGoogleAdsErrorDetail(json));
     allRows = allRows.concat(json.results || []);
     pageToken = json.nextPageToken;
   } while (pageToken);
-
   return allRows;
 }
 
-async function fetchGoogleAdsData() {
-  const { start, end } = currentYearRange();
-
-  // Campaign-level daily performance — replaces the "Query Google 2026" Sheet tab.
-  // `campaign.advertising_channel_type` is included so Performance Max campaigns
-  // (which DO show up here automatically, unlike some other ad platforms) can be
-  // told apart from Search if that's ever useful — no separate query needed for them.
-  const campaignRows = await gaqlSearch(`
-    SELECT
-      segments.date,
-      campaign.name,
-      campaign.advertising_channel_type,
-      metrics.cost_micros,
-      metrics.clicks,
-      metrics.impressions,
-      metrics.conversions
-    FROM campaign
-    WHERE segments.date BETWEEN '${start}' AND '${end}'
-    ORDER BY segments.date ASC
-  `);
+async function fetchGoogleAdsData({ since, until }) {
+  // Both queries are independent — run them in parallel.
+  const [campaignRows, keywordRows] = await Promise.all([
+    gaqlSearch(`
+      SELECT
+        segments.date,
+        campaign.name,
+        campaign.advertising_channel_type,
+        metrics.cost_micros,
+        metrics.clicks,
+        metrics.impressions,
+        metrics.conversions
+      FROM campaign
+      WHERE segments.date BETWEEN '${since}' AND '${until}'
+      ORDER BY segments.date ASC
+    `),
+    gaqlSearch(`
+      SELECT
+        segments.date,
+        campaign.name,
+        ad_group_criterion.keyword.text,
+        ad_group_criterion.status,
+        metrics.cost_micros,
+        metrics.clicks,
+        metrics.impressions,
+        metrics.conversions
+      FROM keyword_view
+      WHERE segments.date BETWEEN '${since}' AND '${until}'
+      ORDER BY segments.date ASC
+    `),
+  ]);
 
   const campaignDaily = campaignRows.map((r) => ({
-    Date: r.segments.date, // "YYYY-MM-DD"
+    Date: r.segments.date,
     Campaign: r.campaign.name,
-    ChannelType: r.campaign.advertisingChannelType, // camelCase in the response
-    Cost: microsToCurrency(r.metrics.costMicros), // string micros -> number currency
+    ChannelType: r.campaign.advertisingChannelType,
+    Cost: microsToCurrency(r.metrics.costMicros),
     Clicks: num(r.metrics.clicks),
     Impressions: num(r.metrics.impressions),
     Conversions: num(r.metrics.conversions),
   }));
-
-  // Keyword-level daily performance — the real cost-per-keyword data the Sheet
-  // could never provide.
-  const keywordRows = await gaqlSearch(`
-    SELECT
-      segments.date,
-      campaign.name,
-      ad_group_criterion.keyword.text,
-      ad_group_criterion.status,
-      metrics.cost_micros,
-      metrics.clicks,
-      metrics.impressions,
-      metrics.conversions
-    FROM keyword_view
-    WHERE segments.date BETWEEN '${start}' AND '${end}'
-    ORDER BY segments.date ASC
-  `);
 
   const keywordDaily = keywordRows.map((r) => ({
     Date: r.segments.date,
@@ -177,29 +188,50 @@ async function fetchGoogleAdsData() {
     Conversions: num(r.metrics.conversions),
   }));
 
-  return { campaignDaily, keywordDaily, fetchedAt: new Date().toISOString(), apiVersion: API_VERSION };
+  return { campaignDaily, keywordDaily, range: { since, until }, fetchedAt: new Date().toISOString(), apiVersion: API_VERSION };
+}
+
+// ---------------------------------------------------------------------------
+// Cache: per-range, in-memory, 15 min.
+// ---------------------------------------------------------------------------
+const CACHE_TTL_MS = 15 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 20;
+const cache = new Map();
+function cacheGet(key) {
+  const hit = cache.get(key);
+  return hit && Date.now() - hit.fetchedAt < CACHE_TTL_MS ? hit.data : null;
+}
+function cacheSet(key, data) {
+  if (cache.size >= CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value);
+  cache.set(key, { data, fetchedAt: Date.now() });
 }
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", process.env.ALLOWED_ORIGIN || "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  if (process.env.ALLOWED_ORIGIN) {
+    res.setHeader("Access-Control-Allow-Origin", process.env.ALLOWED_ORIGIN);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  }
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const now = Date.now();
-    const forceRefresh = req.query?.refresh === "1";
-    if (!dataCache.data || forceRefresh || now - dataCache.fetchedAt > DATA_CACHE_TTL_MS) {
-      dataCache = { data: await fetchGoogleAdsData(), fetchedAt: now };
+    const range = resolveRange(req.query);
+    const secret = process.env.REFRESH_SECRET;
+    const forceRefresh = Boolean(secret) && req.query?.refresh === secret;
+    const cacheKey = `${range.since}|${range.until}`;
+
+    let data = forceRefresh ? null : cacheGet(cacheKey);
+    if (!data) {
+      data = await fetchGoogleAdsData(range);
+      cacheSet(cacheKey, data);
     }
-    res.setHeader("Cache-Control", "s-maxage=900, stale-while-revalidate=300");
-    return res.status(200).json(dataCache.data);
+    res.setHeader("Cache-Control", forceRefresh ? "no-store" : "s-maxage=900, stale-while-revalidate=300");
+    return res.status(200).json(data);
   } catch (err) {
-    // Surface the FULL detail (see extractGoogleAdsErrorDetail) — a generic
-    // 500 with just err.message turns every failure into a guessing game.
     console.error("Google Ads API error:", err);
-    return res.status(502).json({
-      error: "No se pudo obtener datos de Google Ads",
+    return res.status(err.status || 502).json({
+      error: err.status === 400 ? "Solicitud inválida" : "No se pudo obtener datos de Google Ads",
       detail: err.message || String(err),
     });
   }

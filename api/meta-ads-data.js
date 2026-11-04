@@ -40,22 +40,39 @@ const MAX_RANGE_DAYS = 3 * 366; // hard ceiling so a hand-crafted URL can't requ
 export const config = { maxDuration: 60 };
 
 // ---------------------------------------------------------------------------
-// Objective classification — single source of truth for OVEX's own taxonomy
-// (WEBFORMS / MENSAJES / APP / OTRO). The dashboard reads `ObjetivoOVEX`
-// directly instead of re-deriving it from Meta's raw enum.
-// Priority: campaign name containing "mensaje" wins (same rule the Sheet used),
-// then Meta's objective enum. Lists are env-overridable so a newly discovered
-// objective is a config change, not a code change. Verify with ?debug=objectives.
+// Objective classification — single source of truth for OVEX's own taxonomy:
+//   MENSAJES  — WhatsApp / messaging campaigns (incl. retargeting to WA)
+//   APP       — app campaigns, whatever objective Meta reports
+//   LEADFORMS — Meta instant lead forms (leads never pass through the web,
+//               so they never reach the CRM with UTM — kept apart from WEBFORMS)
+//   WEBFORMS  — web registration campaigns
+//   OTRO      — awareness, traffic, likes, profile visits, etc.
+// Campaign-name tokens win over Meta's objective enum, because the same enum
+// (OUTCOME_LEADS, OUTCOME_ENGAGEMENT) is shared by campaigns of different types.
+// Rules, in order (first match wins):
+//   1. name contains "mensaje" or the token "WA"  (RO_MX_LEA_PRO_WA, RO_MX_SAL_RTG_WA_ONBOARDING)
+//   2. name contains the token "APP"              (RO_MX_LEA_PRO_APP V2, APP Registros Universal)
+//   3. name contains the token "FORMS"            (RO_MX_LEA_PRO_FORMS)
+//   4. objective MESSAGES → MENSAJES; app objective → APP; leads/sales objective → WEBFORMS
+//   5. everything else → OTRO
+// A "token" is delimited by start/end, "_" or a space, so "AplicacionesWeb"
+// does not match APP and "WAP" in ad names is never checked (campaign name only).
+// Objective lists are env-overridable. Verify with ?debug=objectives.
 // ---------------------------------------------------------------------------
 const csvSet = (v, fallback) =>
   new Set((v || fallback).split(",").map((s) => s.trim().toUpperCase()).filter(Boolean));
 const WEBFORMS_OBJECTIVES = csvSet(process.env.WEBFORMS_OBJECTIVES, "OUTCOME_LEADS,LEAD_GENERATION,OUTCOME_SALES,CONVERSIONS");
 const APP_OBJECTIVES = csvSet(process.env.APP_OBJECTIVES, "OUTCOME_APP_PROMOTION,APP_INSTALLS");
 
+const hasToken = (name, token) => new RegExp("(^|[_\\s])" + token + "([_\\s]|$)", "i").test(name);
+
 function classifyObjetivoOVEX(campaignName, objective) {
-  const name = (campaignName || "").toLowerCase();
+  const name = (campaignName || "").trim();
   const obj = (objective || "").toUpperCase();
-  if (name.includes("mensaje") || obj === "MESSAGES") return "MENSAJES";
+  if (/mensaje/i.test(name) || hasToken(name, "WA")) return "MENSAJES";
+  if (hasToken(name, "APP")) return "APP";
+  if (hasToken(name, "FORMS")) return "LEADFORMS";
+  if (obj === "MESSAGES") return "MENSAJES";
   if (APP_OBJECTIVES.has(obj)) return "APP";
   if (WEBFORMS_OBJECTIVES.has(obj)) return "WEBFORMS";
   return "OTRO";
@@ -228,13 +245,14 @@ function buildObjectiveSummary(rows, range) {
   rows.forEach((r) => {
     const key = r.campaign_name || "(sin nombre)";
     if (!campaigns[key]) {
-      campaigns[key] = { campaign: key, metaObjective: r.objective || "", objetivoOVEX: classifyObjetivoOVEX(r.campaign_name, r.objective), spend: 0, registrationsCompleted: 0, messagingConversationsStarted: 0 };
+      campaigns[key] = { campaign: key, metaObjective: r.objective || "", objetivoOVEX: classifyObjetivoOVEX(r.campaign_name, r.objective), spend: 0, registrationsCompleted: 0, messagingConversationsStarted: 0, leads: 0 };
     }
     const c = campaigns[key];
     const spend = num(r.spend);
     c.spend += spend; totalSpend += spend;
     c.registrationsCompleted += extractAction(r.actions, NAMED_ACTION_TYPES.registrationsCompleted);
     c.messagingConversationsStarted += extractAction(r.actions, NAMED_ACTION_TYPES.messagingConversationsStarted);
+    c.leads += extractAction(r.actions, NAMED_ACTION_TYPES.leads);
     (r.actions || []).forEach((a) => { actionTotals[a.action_type] = (actionTotals[a.action_type] || 0) + num(a.value); });
   });
   const list = Object.values(campaigns).map((c) => ({ ...c, spend: round2(c.spend) })).sort((a, b) => b.spend - a.spend);

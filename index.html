@@ -637,6 +637,25 @@ function showFatalError(err){
   document.getElementById('statusBadges').innerHTML = `<span class="status-badge error">🔴 Error de conexión</span>`;
 }
 
+/* Columnas "PLATAFORMA ADS" y "OBJETIVO" de la pestaña Base Leads con UTM: son la fuente
+   de verdad para atribuir canal y objetivo a cada lead. Celdas vacías o con error (#N/A)
+   cuentan como "sin dato". En el Sheet el objetivo de app se llama REGISTROS APP; el
+   backend de Meta lo llama APP, así que se unifica en APP para que ambos lados crucen. */
+function cleanSheetCell(v){
+  const s = (v === null || v === undefined) ? '' : String(v).trim().toUpperCase();
+  return (!s || s.startsWith('#')) ? '' : s;
+}
+function normalizePlataforma(v){
+  const s = cleanSheetCell(v);
+  if(s === 'META ADS') return 'Meta Ads';
+  if(s === 'GOOGLE ADS') return 'Google Ads';
+  return '';
+}
+function normalizeObjetivo(v){
+  const s = cleanSheetCell(v);
+  return s === 'REGISTROS APP' ? 'APP' : s;
+}
+
 function processRawData(){
   const str = v => (v === null || v === undefined) ? '' : String(v).trim();
   const parseLead = (row, tabOrigin) => {
@@ -656,6 +675,8 @@ function processRawData(){
       parametrico: (row['Paramétrico aprobado']||'').toString().trim().toUpperCase(),
       buro: (row['Buró aprobado']||'').toString().trim().toUpperCase(),
       arrendamiento: (row['Con arrendamiento']||'').toString().trim().toUpperCase(),
+      plataforma: normalizePlataforma(row['PLATAFORMA ADS']), // solo existe en Base Leads con UTM
+      objetivo: normalizeObjetivo(row['OBJETIVO']),            // solo existe en Base Leads con UTM
       // Solo para el desglose del funnel (Tab 3):
       idUsuario: str(row['ID Usuario']),
       nombre: str(row['Nombre']),
@@ -790,6 +811,7 @@ function filterByRange(arr, range){ return arr.filter(x => x.fecha >= range.star
    SHARED CLASSIFICATION HELPERS
    ========================================================================= */
 function classifyChannel(l){
+  if(l.plataforma) return l.plataforma; // columna PLATAFORMA ADS (Base Leads con UTM)
   if(l.fuente==='fb' || l.fuente==='ig') return 'Meta Ads';
   if(l.fuente==='google') return 'Google Ads';
   return 'Sin Fuente';
@@ -1219,40 +1241,32 @@ const FUNNEL_STAGES = [
 let funnelState = { range:null, leads:[], inversion:0, scopeLabel:'todos los canales' };
 
 /* Filtros del embudo: plataforma + objetivo.
-   - Plataforma se deduce de la fuente UTM del lead (fb/ig = Meta, google = Google).
-   - Objetivo se hereda de la campaña: el lead trae el nombre de su campaña y esa
-     campaña tiene un OBJETIVO en la tabla de Meta (Google Search = WEBFORMS).
-   - WhatsApp (MENSAJES) no se ofrece como filtro a propósito: sus conversaciones
-     no generan registro con UTM, así que no hay leads atribuibles a ese objetivo. */
+   - Plataforma y objetivo de cada lead salen de las columnas PLATAFORMA ADS y OBJETIVO de
+     la pestaña Base Leads con UTM (ver processRawData). Sin Fuente (pestaña sin UTM) no
+     tiene esas columnas, así que no se puede atribuir a un objetivo.
+   - La inversión se filtra con el OBJETIVO de cada fila de gasto (Meta) y Google se toma
+     como WEBFORMS (una sola campaña de búsqueda).
+   - WhatsApp (MENSAJES) no se ofrece como filtro a propósito: sus conversaciones no
+     generan registro con UTM, así que no hay leads atribuibles a ese objetivo. */
 let funnelFilters = { platform:'all', objetivo:'all' };
 const FUNNEL_EXCLUDED_OBJETIVOS = ['MENSAJES'];
 const FUNNEL_PLATFORM_LABELS = { all:'todas las plataformas', meta:'Meta Ads', google:'Google Ads' };
 
-function funnelObjetivoMap(){
-  const meta = {};
-  ALL_META.forEach(r => { if(r.campaignName && r.objetivo && !meta[r.campaignName]) meta[r.campaignName] = r.objetivo; });
-  const g = ALL_GOOGLE.find(r => r.objetivo);
-  return { meta, google: g ? g.objetivo : 'WEBFORMS' };
-}
-function funnelLeadObjetivo(l, objMap){
-  if(l.fuente === 'google') return objMap.google;
-  if(l.fuente === 'fb' || l.fuente === 'ig') return objMap.meta[campaignBaseKey(l)] || null;
-  return null; // Sin Fuente: no hay campaña a la que atribuir un objetivo
-}
 function objetivoLabel(v){
   if(v === 'WEBFORMS') return 'Webforms';
+  if(v === 'APP') return 'Registros app';
   const t = String(v).replace(/^OUTCOME_/,'').replace(/_/g,' ').toLowerCase();
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
-function funnelObjetivoOptions(objMap){
+// Solo se ofrecen objetivos que realmente tienen leads atribuidos en el CRM.
+function funnelObjetivoOptions(){
   const set = new Set();
-  ALL_META.forEach(r => { if(r.objetivo) set.add(r.objetivo); });
-  set.add(objMap.google);
+  ALL_LEADS.forEach(l => { if(l.objetivo) set.add(l.objetivo); });
   FUNNEL_EXCLUDED_OBJETIVOS.forEach(o => set.delete(o));
-  return [...set].sort();
+  return [...set].sort((a,b) => (a==='WEBFORMS' ? -1 : b==='WEBFORMS' ? 1 : a.localeCompare(b)));
 }
-function syncFunnelFilterUI(objMap){
-  const opts = funnelObjetivoOptions(objMap);
+function syncFunnelFilterUI(){
+  const opts = funnelObjetivoOptions();
   if(funnelFilters.objetivo !== 'all' && !opts.includes(funnelFilters.objetivo)) funnelFilters.objetivo = 'all';
   document.getElementById('funnelObjetivo').innerHTML = ['all', ...opts].map(v =>
     `<button type="button" data-v="${v}" class="${funnelFilters.objetivo===v?'active':''}">${v==='all'?'Todos':objetivoLabel(v)}</button>`
@@ -1270,24 +1284,23 @@ function renderFunnel(range){
   const metaRows = filterByRange(ALL_META, range);
   const googleRows = filterByRange(ALL_GOOGLE, range);
 
-  const objMap = funnelObjetivoMap();
-  syncFunnelFilterUI(objMap);
+  syncFunnelFilterUI();
   const { platform, objetivo } = funnelFilters;
 
   const byPlatform = platform === 'all' ? allLeads : allLeads.filter(l => classifyChannel(l) === (platform==='meta' ? 'Meta Ads' : 'Google Ads'));
-  const leads = objetivo === 'all' ? byPlatform : byPlatform.filter(l => funnelLeadObjetivo(l, objMap) === objetivo);
+  const leads = objetivo === 'all' ? byPlatform : byPlatform.filter(l => l.objetivo === objetivo);
 
   // La inversión sigue los mismos filtros que los registros, para que el costo por etapa sea coherente.
   const objOk = o => objetivo === 'all' || o === objetivo;
-  const metaSpend = platform === 'google' ? 0 : metaRows.filter(r => objOk(r.objetivo)).reduce((s,r)=>s+r.cost,0);
-  const googleSpend = platform === 'meta' ? 0 : googleRows.filter(r => objOk(r.objetivo || objMap.google)).reduce((s,r)=>s+r.cost,0);
+  const metaSpend = platform === 'google' ? 0 : metaRows.filter(r => objOk(normalizeObjetivo(r.objetivo))).reduce((s,r)=>s+r.cost,0);
+  const googleSpend = platform === 'meta' ? 0 : googleRows.filter(r => objOk(normalizeObjetivo(r.objetivo) || 'WEBFORMS')).reduce((s,r)=>s+r.cost,0);
   const inversion = metaSpend + googleSpend;
   funnelState = { range, leads, inversion, scopeLabel: funnelScopeLabel() };
 
   const omitted = byPlatform.length - leads.length;
   document.getElementById('funnelScopeNote').textContent =
     'WhatsApp (Mensajes) no se ofrece como filtro: sus conversaciones no generan registro con UTM.' +
-    (objetivo !== 'all' && omitted > 0 ? ` Con el filtro de objetivo se omiten ${fmtInt(omitted)} registros sin campaña atribuible.` : '');
+    (objetivo !== 'all' && omitted > 0 ? ` Con el filtro de objetivo se omiten ${fmtInt(omitted)} registros sin objetivo asignado en el Sheet.` : '');
 
   const counts = FUNNEL_STAGES.map(s => leads.filter(s.test).length);
   const max = counts[0] || 1;

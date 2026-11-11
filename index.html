@@ -136,6 +136,13 @@
   .funnel-bar.label-out + .funnel-pct-out{ display:inline; }
   .funnel-cost{ flex:none; font-size:.8rem; color:var(--text-muted); white-space:nowrap; }
   .funnel-hint{ font-size:.78rem; color:var(--text-muted); margin:-1rem 0 1.25rem; }
+  .funnel-filters{ display:flex; flex-wrap:wrap; gap:.75rem 1.75rem; margin-bottom:1.1rem; }
+  .filter-group{ display:flex; align-items:center; gap:.6rem; }
+  .filter-lbl{ font-size:.7rem; text-transform:uppercase; letter-spacing:.06em; font-weight:700; color:var(--text-muted); }
+  .mini-selector{ display:flex; gap:.4rem; flex-wrap:wrap; }
+  .mini-selector button{ background:var(--surface); color:var(--text-muted); border:1px solid var(--border); padding:.4rem .95rem; border-radius:8px; cursor:pointer; font-size:.8rem; font-weight:700; }
+  .mini-selector button.active{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .funnel-scope-note{ font-size:.75rem; color:var(--text-muted); margin:0 0 1.1rem; }
 
   /* ---------- Desglose de registros por etapa (Tab 3) ---------- */
   .drill-backdrop{ position:fixed; inset:0; background:rgba(10,4,20,.72); z-index:50; display:flex; align-items:flex-start; justify-content:center; padding:4vh 1rem; }
@@ -312,6 +319,21 @@
   <div class="container">
     <div class="chart-card">
       <div class="chart-title" style="margin-bottom:1.5rem;">Embudo de Conversión (Costo por Etapa)</div>
+      <div class="funnel-filters">
+        <div class="filter-group">
+          <span class="filter-lbl">Plataforma</span>
+          <div class="mini-selector" id="funnelPlatform">
+            <button type="button" class="active" data-v="all">Todas</button>
+            <button type="button" data-v="meta">Meta Ads</button>
+            <button type="button" data-v="google">Google Ads</button>
+          </div>
+        </div>
+        <div class="filter-group">
+          <span class="filter-lbl">Objetivo</span>
+          <div class="mini-selector" id="funnelObjetivo"></div>
+        </div>
+      </div>
+      <div class="funnel-scope-note" id="funnelScopeNote"></div>
       <div class="funnel-hint">Haz clic en una etapa para ver los registros que la componen.</div>
       <div class="funnel-wrap" id="funnelWrap"></div>
     </div>
@@ -1194,14 +1216,78 @@ const FUNNEL_STAGES = [
   { key:'parametrico', label:'4. Paramétrico Aprobado',         color:'#8B4FCE', test: l => l.parametrico==='SI' },
   { key:'clientes',    label:'5. Clientes (Con arrendamiento)', color:'#27ae60', test: l => isCliente(l) }
 ];
-let funnelState = { range:null, leads:[], inversion:0 };
+let funnelState = { range:null, leads:[], inversion:0, scopeLabel:'todos los canales' };
+
+/* Filtros del embudo: plataforma + objetivo.
+   - Plataforma se deduce de la fuente UTM del lead (fb/ig = Meta, google = Google).
+   - Objetivo se hereda de la campaña: el lead trae el nombre de su campaña y esa
+     campaña tiene un OBJETIVO en la tabla de Meta (Google Search = WEBFORMS).
+   - WhatsApp (MENSAJES) no se ofrece como filtro a propósito: sus conversaciones
+     no generan registro con UTM, así que no hay leads atribuibles a ese objetivo. */
+let funnelFilters = { platform:'all', objetivo:'all' };
+const FUNNEL_EXCLUDED_OBJETIVOS = ['MENSAJES'];
+const FUNNEL_PLATFORM_LABELS = { all:'todas las plataformas', meta:'Meta Ads', google:'Google Ads' };
+
+function funnelObjetivoMap(){
+  const meta = {};
+  ALL_META.forEach(r => { if(r.campaignName && r.objetivo && !meta[r.campaignName]) meta[r.campaignName] = r.objetivo; });
+  const g = ALL_GOOGLE.find(r => r.objetivo);
+  return { meta, google: g ? g.objetivo : 'WEBFORMS' };
+}
+function funnelLeadObjetivo(l, objMap){
+  if(l.fuente === 'google') return objMap.google;
+  if(l.fuente === 'fb' || l.fuente === 'ig') return objMap.meta[campaignBaseKey(l)] || null;
+  return null; // Sin Fuente: no hay campaña a la que atribuir un objetivo
+}
+function objetivoLabel(v){
+  if(v === 'WEBFORMS') return 'Webforms';
+  const t = String(v).replace(/^OUTCOME_/,'').replace(/_/g,' ').toLowerCase();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+function funnelObjetivoOptions(objMap){
+  const set = new Set();
+  ALL_META.forEach(r => { if(r.objetivo) set.add(r.objetivo); });
+  set.add(objMap.google);
+  FUNNEL_EXCLUDED_OBJETIVOS.forEach(o => set.delete(o));
+  return [...set].sort();
+}
+function syncFunnelFilterUI(objMap){
+  const opts = funnelObjetivoOptions(objMap);
+  if(funnelFilters.objetivo !== 'all' && !opts.includes(funnelFilters.objetivo)) funnelFilters.objetivo = 'all';
+  document.getElementById('funnelObjetivo').innerHTML = ['all', ...opts].map(v =>
+    `<button type="button" data-v="${v}" class="${funnelFilters.objetivo===v?'active':''}">${v==='all'?'Todos':objetivoLabel(v)}</button>`
+  ).join('');
+  document.querySelectorAll('#funnelPlatform button').forEach(b => b.classList.toggle('active', b.dataset.v === funnelFilters.platform));
+}
+function funnelScopeLabel(){
+  const { platform, objetivo } = funnelFilters;
+  if(platform==='all' && objetivo==='all') return 'todos los canales';
+  return [FUNNEL_PLATFORM_LABELS[platform], objetivo==='all' ? null : objetivoLabel(objetivo)].filter(Boolean).join(' · ');
+}
 
 function renderFunnel(range){
-  const leads = filterByRange(ALL_LEADS, range);
+  const allLeads = filterByRange(ALL_LEADS, range);
   const metaRows = filterByRange(ALL_META, range);
   const googleRows = filterByRange(ALL_GOOGLE, range);
-  const inversion = metaRows.reduce((s,r)=>s+r.cost,0) + googleRows.reduce((s,r)=>s+r.cost,0);
-  funnelState = { range, leads, inversion };
+
+  const objMap = funnelObjetivoMap();
+  syncFunnelFilterUI(objMap);
+  const { platform, objetivo } = funnelFilters;
+
+  const byPlatform = platform === 'all' ? allLeads : allLeads.filter(l => classifyChannel(l) === (platform==='meta' ? 'Meta Ads' : 'Google Ads'));
+  const leads = objetivo === 'all' ? byPlatform : byPlatform.filter(l => funnelLeadObjetivo(l, objMap) === objetivo);
+
+  // La inversión sigue los mismos filtros que los registros, para que el costo por etapa sea coherente.
+  const objOk = o => objetivo === 'all' || o === objetivo;
+  const metaSpend = platform === 'google' ? 0 : metaRows.filter(r => objOk(r.objetivo)).reduce((s,r)=>s+r.cost,0);
+  const googleSpend = platform === 'meta' ? 0 : googleRows.filter(r => objOk(r.objetivo || objMap.google)).reduce((s,r)=>s+r.cost,0);
+  const inversion = metaSpend + googleSpend;
+  funnelState = { range, leads, inversion, scopeLabel: funnelScopeLabel() };
+
+  const omitted = byPlatform.length - leads.length;
+  document.getElementById('funnelScopeNote').textContent =
+    'WhatsApp (Mensajes) no se ofrece como filtro: sus conversaciones no generan registro con UTM.' +
+    (objetivo !== 'all' && omitted > 0 ? ` Con el filtro de objetivo se omiten ${fmtInt(omitted)} registros sin campaña atribuible.` : '');
 
   const counts = FUNNEL_STAGES.map(s => leads.filter(s.test).length);
   const max = counts[0] || 1;
@@ -1285,7 +1371,7 @@ function openDrill(stageKey, opener){
   const { start, end } = funnelState.range;
   document.querySelector('#drillBackdrop .drill-panel').style.setProperty('--drill-color', stage.color);
   document.getElementById('drillTitle').textContent = `${stage.label.replace(/^\d+\.\s*/,'')}: ${fmtInt(rows.length)} registros`;
-  document.getElementById('drillSub').textContent = `Periodo del ${fmtFecha(start)} al ${fmtFecha(end)}, registros del CRM de todos los canales`;
+  document.getElementById('drillSub').textContent = `Periodo del ${fmtFecha(start)} al ${fmtFecha(end)}, registros del CRM de ${funnelState.scopeLabel}`;
   document.getElementById('drillSearch').value = '';
   renderDrillRows();
 
@@ -1328,7 +1414,8 @@ function downloadDrillCsv(){
   const blob = new Blob(['\ufeff' + csv], { type:'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `ovex_funnel_${drillState.stage.key}_${toISO(funnelState.range.start)}_${toISO(funnelState.range.end)}.csv`;
+  const scopeTag = (funnelFilters.platform==='all' && funnelFilters.objetivo==='all') ? '' : `_${funnelFilters.platform}_${funnelFilters.objetivo}`.toLowerCase();
+  a.download = `ovex_funnel_${drillState.stage.key}${scopeTag}_${toISO(funnelState.range.start)}_${toISO(funnelState.range.end)}.csv`;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
@@ -1574,6 +1661,15 @@ document.addEventListener('keydown', e => { if(e.key==='Escape' && !document.get
 document.getElementById('drillSearch').addEventListener('input', renderDrillRows);
 document.getElementById('drillCsv').addEventListener('click', downloadDrillCsv);
 window.addEventListener('resize', fitFunnelLabels);
+
+['funnelPlatform','funnelObjetivo'].forEach(id => {
+  document.getElementById(id).addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if(!b) return;
+    funnelFilters[id==='funnelPlatform' ? 'platform' : 'objetivo'] = b.dataset.v;
+    renderFunnel(resolveRange());
+  });
+});
 
 init();
 </script>
